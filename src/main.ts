@@ -139,10 +139,15 @@ class HeistScene extends Phaser.Scene {
   private levelMenu?: HTMLDivElement;
   private landingMenu?: HTMLDivElement;
   private gameTopControls?: HTMLDivElement;
+  private gameResultActions?: HTMLDivElement;
   private touchControlMenu?: HTMLDivElement;
   private settingsMenu?: HTMLDivElement;
   private pauseMenu?: HTMLDivElement;
   private preloader?: HTMLDivElement;
+  private orientationGate?: HTMLDivElement;
+  private pendingLandscapeLevel?: number;
+  private orientationFrame?: number;
+  private orientationResumeState?: 'playing' | 'paused';
   private viewOffsetX = 0;
   private viewOffsetY = 0;
   private spikeSprites: Phaser.GameObjects.Image[] = [];
@@ -174,7 +179,7 @@ class HeistScene extends Phaser.Scene {
   private touchJumpHeld = false;
   private gadgetHover = [false, false, false, false];
   private touchControlsVisible = false;
-  private state: 'title' | 'playing' | 'paused' | 'won' | 'lost' = 'title';
+  private state: 'title' | 'playing' | 'paused' | 'won' | 'lost' | 'timeout' = 'title';
   private score = 0;
   private lives = 3;
   private timeLeft = RUN_TIME_SECONDS;
@@ -198,12 +203,15 @@ class HeistScene extends Phaser.Scene {
   private chestAnimTimer = 0;
   private soundEnabled = true;
   private musicEnabled = true;
+  private musicVolume = 0.55;
+  private soundEffectsVolume = 0.8;
   private screenShakeEnabled = true;
   private audioContext?: AudioContext;
   private sfxBus?: GainNode;
   private musicBus?: GainNode;
   private musicTimer?: number;
   private musicStep = 0;
+  private nextMusicTime = 0;
   private hudRefreshTimer = 0;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
 
@@ -214,14 +222,23 @@ class HeistScene extends Phaser.Scene {
     this.load.image('loader-world', '/assets/fagiolo-loader-world.png');
     const mount = document.getElementById('game');
     if (mount) {
-      const preloaderFromMarkup = mount.querySelector<HTMLDivElement>('#initial-preloader');
+      const existingPreloaders = Array.from(mount.querySelectorAll<HTMLDivElement>('.game-preloader'));
+      const preloaderFromMarkup = mount.querySelector<HTMLDivElement>('#initial-preloader') ?? existingPreloaders[0];
       this.preloader = preloaderFromMarkup ?? document.createElement('div');
       this.preloader.className = 'game-preloader';
       if (!preloaderFromMarkup) {
-        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
+        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="orientation-hint"><span class="orientation-phone" aria-hidden="true"></span><span class="orientation-hint-copy"><b>LANDSCAPE FOR THE BEST HEIST</b><small>Rotate your phone while Fagiolo gets ready.</small></span></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
         mount.append(this.preloader);
       }
-      const loaderStartedAt = performance.now();
+      // Vite/dev restarts can leave the static loader and a generated loader
+      // together. Keep one loader and one brand block even across a hot reload.
+      mount.querySelectorAll<HTMLDivElement>('.game-preloader').forEach(loader => {
+        if (loader !== this.preloader) loader.remove();
+      });
+      this.preloader.querySelectorAll<HTMLElement>('.loader-copy').forEach((brand, index) => {
+        if (index > 0) brand.remove();
+      });
+      let loaderStartedAt = 0;
       const fill = this.preloader.querySelector('.loader-track i') as HTMLElement;
       const percent = this.preloader.querySelector('.loader-percent') as HTMLElement;
       const runner = this.preloader.querySelector('.loader-bean') as HTMLImageElement;
@@ -238,6 +255,8 @@ class HeistScene extends Phaser.Scene {
         image.src = `/assets/bean-jump-${frame}-aligned.png`;
         return image;
       });
+      // Decode the jump poses during the walk so the jump does not hitch later.
+      void Promise.all(jumpFrames.map(image => image.decode().catch(() => undefined)));
       const routeWidth = route.clientWidth;
       const runnerWidth = runnerMover.clientWidth;
       let frameIndex = 0;
@@ -246,48 +265,56 @@ class HeistScene extends Phaser.Scene {
       let sceneFinished = false;
       let dismissed = false;
       const sceneDuration = 5800;
+      let walkStartedAt = 0;
       const finishIfReady = () => {
         if (!loadReady || !sceneFinished || dismissed) return;
         dismissed = true;
         this.preloader?.classList.add('is-done');
         window.setTimeout(() => {
-          window.clearInterval(runnerAnimation);
           this.preloader?.remove();
         }, 650);
       };
-      const animateRunner = () => {
-        if (jumping) return;
-        frameIndex = (frameIndex + 1) % runnerFrames.length;
-        runner.src = runnerFrames[frameIndex].src;
-      };
-      const runnerAnimation = window.setInterval(animateRunner, 180);
       let jumpPlayed = false;
-      let jumpFrame = 0;
-      let jumpFrameTimer = 0;
+      let jumpStartedAt = 0;
       let lastPercentValue = -1;
+      let displayedRunnerSrc = runner.src;
       const animateLoading = (now: number) => {
         const elapsed = Math.min(sceneDuration, now - loaderStartedAt);
+        const walkElapsed = Math.min(sceneDuration, now - walkStartedAt);
+        const smoothStep = (value: number) => value * value * (3 - 2 * value);
         let progress: number;
-        if (elapsed < 2400) progress = 0.42 * elapsed / 2400;
-        else if (elapsed < 3000) progress = 0.42 + 0.16 * (elapsed - 2400) / 600;
-        else progress = 0.58 + 0.42 * (elapsed - 3000) / (sceneDuration - 3000);
+        if (elapsed < 2400) progress = 0.42 * smoothStep(elapsed / 2400);
+        else if (elapsed < 3000) progress = 0.42 + 0.16 * smoothStep((elapsed - 2400) / 600);
+        else progress = 0.58 + 0.42 * smoothStep((elapsed - 3000) / (sceneDuration - 3000));
 
-        if (!jumpPlayed && elapsed >= 2400) {
+        if (!jumpPlayed && walkElapsed >= 2400) {
           jumpPlayed = true;
           jumping = true;
+          jumpStartedAt = walkElapsed;
           runner.classList.add('is-jumping');
-          jumpFrame = 0;
-          runner.src = jumpFrames[0].src;
-          jumpFrameTimer = window.setInterval(() => {
-            jumpFrame = Math.min(jumpFrames.length - 1, jumpFrame + 1);
-            runner.src = jumpFrames[jumpFrame].src;
-          }, 135);
-          window.setTimeout(() => {
-            window.clearInterval(jumpFrameTimer);
+        }
+
+        // Start on an in-stride pose so the first forward movement is already
+        // accompanied by a visible walking step (rather than a sliding idle pose).
+        frameIndex = (1 + Math.floor(walkElapsed / 72)) % runnerFrames.length;
+        if (jumping) {
+          const jumpElapsed = walkElapsed - jumpStartedAt;
+          if (jumpElapsed >= 600) {
             jumping = false;
             runner.classList.remove('is-jumping');
-            runner.src = runnerFrames[frameIndex].src;
-          }, 600);
+          } else {
+            // Jump frame 0 is cropped at the shoe soles. Begin with the clean
+            // takeoff pose and advance through the fully visible airborne poses.
+            const jumpPose = 1 + Math.min(2, Math.floor(jumpElapsed / 130));
+            if (displayedRunnerSrc !== jumpFrames[jumpPose].src) {
+              runner.src = jumpFrames[jumpPose].src;
+              displayedRunnerSrc = jumpFrames[jumpPose].src;
+            }
+          }
+        }
+        if (!jumping && displayedRunnerSrc !== runnerFrames[frameIndex].src) {
+          runner.src = runnerFrames[frameIndex].src;
+          displayedRunnerSrc = runnerFrames[frameIndex].src;
         }
 
         const percentValue = Math.round(progress * 100);
@@ -296,7 +323,9 @@ class HeistScene extends Phaser.Scene {
           percent.textContent = `${percentValue}%`;
           lastPercentValue = percentValue;
         }
-        const runnerX = routeWidth * progress - runnerWidth / 2;
+        // Keep Fagiolo's route speed constant and independent of the loading bar.
+        const runnerProgress = walkElapsed / sceneDuration;
+        const runnerX = routeWidth * runnerProgress - runnerWidth / 2;
         runnerMover.style.transform = `translate3d(${runnerX}px, 0, 0)`;
         runnerShadow.style.transform = `translate3d(${runnerX + runnerWidth / 2}px, 0, 0) translateX(-50%)`;
         if (elapsed >= sceneDuration) {
@@ -304,7 +333,19 @@ class HeistScene extends Phaser.Scene {
           finishIfReady();
         } else window.requestAnimationFrame(animateLoading);
       };
-      window.requestAnimationFrame(animateLoading);
+      // Wait for every walk pose to load and decode before starting the timer or
+      // animation. This avoids a frozen first pose followed by a sudden burst.
+      Promise.all(runnerFrames.map(image => image.decode().catch(() => undefined))).then(() => {
+        if (dismissed) return;
+        frameIndex = 1;
+        runner.src = runnerFrames[frameIndex].src;
+        displayedRunnerSrc = runnerFrames[frameIndex].src;
+        loaderStartedAt = performance.now();
+        walkStartedAt = loaderStartedAt;
+        // The walk has its own constant-speed clock; it does not follow the
+        // loading bar's faster jump segment or easing.
+        window.requestAnimationFrame(animateLoading);
+      });
       this.load.once('complete', () => {
         loadReady = true;
         finishIfReady();
@@ -345,8 +386,12 @@ class HeistScene extends Phaser.Scene {
     this.unlockedLevel = Math.max(0, Math.min(2, Number(localStorage.getItem('fagiolo-unlocked-level') || 0)));
     this.soundEnabled = localStorage.getItem('fagiolo-sound-enabled') !== 'false';
     this.musicEnabled = localStorage.getItem('fagiolo-music-enabled') !== 'false';
+    const savedMusicVolume = localStorage.getItem('fagiolo-music-volume');
+    const savedEffectsVolume = localStorage.getItem('fagiolo-effects-volume');
+    if (savedMusicVolume !== null) this.musicVolume = Phaser.Math.Clamp(Number(savedMusicVolume), 0, 100) / 100;
+    if (savedEffectsVolume !== null) this.soundEffectsVolume = Phaser.Math.Clamp(Number(savedEffectsVolume), 0, 100) / 100;
     this.screenShakeEnabled = localStorage.getItem('fagiolo-screen-shake') !== 'false';
-    this.touchControlsVisible = this.sys.game.device.input.touch;
+    this.touchControlsVisible = this.sys.game.device.input.touch || navigator.maxTouchPoints > 0;
     this.cursors = this.input.keyboard?.createCursorKeys();
     this.keys = {
       left: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
@@ -401,11 +446,10 @@ class HeistScene extends Phaser.Scene {
     this.titleLayer.setVisible(false);
     const landing = document.createElement('div');
     landing.className = 'landing-menu is-visible';
-    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span><span class="nav-caption">THE GREAT BEAN ESCAPE</span><span class="nav-chip">A CASTLE ADVENTURE</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> THE GREAT BEAN ESCAPE</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">A quiet castle. A watchful guard. One very determined bean with everything to gain.</p><button class="landing-cta" type="button"><span>ENTER THE CASTLE</span><b>→</b></button><div class="hero-meta"><span>THREE WINGS</span><span>ONE DARING GETAWAY</span></div></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>JUMP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">A LITTLE CUNNING GOES A LONG WAY.</span></footer>`;
+    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span><span class="nav-caption">FAGIOLO HEIST</span><span class="nav-chip">A SNEAKY PLATFORMER</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> SNEAK IN. GET THE BEANS. GET OUT.</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">Slip past the guards, dodge castle traps and collect beans on your way to the treasure.</p><button class="landing-cta" type="button"><span>CHOOSE A LEVEL</span><b>→</b></button></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>LEAP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">ESC <b>PAUSES</b></span></footer>`;
     document.getElementById('game')?.append(landing);
-    const gameSurface = document.getElementById('game');
-    if (gameSurface) gameSurface.style.background = "#102744 url('/assets/fagiolo-landing-art.png') 62% center / 115% auto no-repeat";
     this.landingMenu = landing;
+    this.setLandingBackdrop();
     landing.querySelector('.landing-cta')?.addEventListener('click', () => {
       this.playGameSound('start');
       this.startBackgroundMusic();
@@ -489,7 +533,7 @@ class HeistScene extends Phaser.Scene {
     this.titleStartZone = this.add.zone(543, 640, 654, 102).setDepth(7).setScrollFactor(0).setInteractive().on('pointerdown', () => this.showLevelSelect());
     this.modalButtonZone = this.add.zone(W / 2, H / 2 + 142, 270, 60).setScrollFactor(0).setInteractive().on('pointerdown', () => {
       if (this.state === 'won') this.showLevelSelect();
-      else if (this.state === 'lost') this.startGame(this.levelIndex);
+      else if (this.state === 'lost' || this.state === 'timeout') this.startGame(this.levelIndex);
     });
     this.input.on('pointerup', () => { this.touchLeft = false; this.touchRight = false; this.touchJumpHeld = false; });
     this.input.keyboard?.on('keydown-ENTER', () => this.state === 'title' ? this.showLevelSelect() : this.startGame(this.levelIndex));
@@ -499,6 +543,7 @@ class HeistScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-M', () => {
       this.soundEnabled = !this.soundEnabled;
       localStorage.setItem('fagiolo-sound-enabled', String(this.soundEnabled));
+      this.updateSfxMix();
       this.syncSettingsMenu();
       if (this.state === 'paused') this.drawHud(true);
       if (this.soundEnabled) this.playGameSound('power');
@@ -520,6 +565,28 @@ class HeistScene extends Phaser.Scene {
     controls.querySelector('[data-action="settings"]')?.addEventListener('click', () => this.toggleSettings());
     controls.querySelector('[data-action="exit"]')?.addEventListener('click', () => this.quitToLevelSelect());
 
+    const resultActions = document.createElement('div');
+    resultActions.className = 'game-result-actions';
+    resultActions.innerHTML = '<button type="button" data-result="retry">RETRY LEVEL</button><button type="button" data-result="levels">RETURN TO LEVELS</button>';
+    mount.append(resultActions);
+    this.gameResultActions = resultActions;
+    const retryButton = resultActions.querySelector<HTMLButtonElement>('[data-result="retry"]');
+    const retryFromResult = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.retryCurrentLevel();
+    };
+    retryButton?.addEventListener('pointerdown', retryFromResult);
+    retryButton?.addEventListener('click', retryFromResult);
+    const levelsButton = resultActions.querySelector<HTMLButtonElement>('[data-result="levels"]');
+    const returnFromResult = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.state === 'lost' || this.state === 'timeout') this.quitToLevelSelect();
+    };
+    levelsButton?.addEventListener('pointerdown', returnFromResult);
+    levelsButton?.addEventListener('click', returnFromResult);
+
     const settings = document.createElement('div');
     settings.className = 'game-settings-overlay';
     settings.innerHTML = `<section class="game-settings-panel" role="dialog" aria-modal="true" aria-labelledby="game-settings-title"><header class="game-settings-header"><span class="game-settings-kicker">HEIST PREFERENCES</span><button class="settings-close" type="button" aria-label="Close settings">×</button><h2 id="game-settings-title">Settings</h2><p>Make the escape feel right for you. Changes save automatically.</p></header><div class="settings-options"><div class="settings-option"><span class="settings-option-icon">♫</span><span class="settings-option-copy"><b>Soundtrack</b><small>Original castle heist music</small></span><button class="settings-toggle" type="button" data-setting="0" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">♪</span><span class="settings-option-copy"><b>Sound effects</b><small>Beans, jumps and heist feedback</small></span><button class="settings-toggle" type="button" data-setting="1" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">✦</span><span class="settings-option-copy"><b>Screen shake</b><small>Impact feedback when Fagiolo is hit</small></span><button class="settings-toggle" type="button" data-setting="2" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">▣</span><span class="settings-option-copy"><b>Display mode</b><small>Switch between windowed and fullscreen</small></span><button class="settings-toggle settings-display-toggle" type="button" data-setting="3" aria-pressed="false">WINDOWED</button></div></div><div class="settings-controls-hint"><span>MOVE <b>A / D</b> or <b>← / →</b></span><span>JUMP <b>SPACE</b></span><span>GADGETS <b>1–4</b></span></div><footer><button class="settings-resume" type="button">BACK TO HEIST <span>↗</span></button></footer></section>`;
@@ -530,6 +597,30 @@ class HeistScene extends Phaser.Scene {
     settings.querySelectorAll<HTMLButtonElement>('.settings-toggle').forEach(button => {
       button.addEventListener('click', () => this.applySetting(Number(button.dataset.setting)));
     });
+    const audioOptions = settings.querySelectorAll<HTMLElement>('.settings-option');
+    const addVolumeControl = (optionIndex: number, kind: 'music' | 'effects', label: string, volume: number) => {
+      const option = audioOptions[optionIndex];
+      const control = document.createElement('div');
+      control.className = 'settings-volume-control';
+      control.innerHTML = `<label for="${kind}-volume-range">${label} volume</label><input id="${kind}-volume-range" type="range" min="0" max="100" step="1" value="${Math.round(volume * 100)}" aria-label="${label} volume"><output>${Math.round(volume * 100)}%</output>`;
+      option.classList.add('has-volume');
+      option.append(control);
+      control.querySelector('input')?.addEventListener('input', event => {
+        const value = Number((event.currentTarget as HTMLInputElement).value);
+        control.querySelector('output')!.textContent = `${value}%`;
+        if (kind === 'music') {
+          this.musicVolume = value / 100;
+          localStorage.setItem('fagiolo-music-volume', String(value));
+          this.updateMusicMix();
+        } else {
+          this.soundEffectsVolume = value / 100;
+          localStorage.setItem('fagiolo-effects-volume', String(value));
+          this.updateSfxMix();
+        }
+      });
+    };
+    addVolumeControl(0, 'music', 'Music', this.musicVolume);
+    addVolumeControl(1, 'effects', 'Sound effects', this.soundEffectsVolume);
 
     const pause = document.createElement('div');
     pause.className = 'game-pause-overlay';
@@ -538,6 +629,24 @@ class HeistScene extends Phaser.Scene {
     this.pauseMenu = pause;
     pause.querySelector('.pause-resume')?.addEventListener('click', () => this.togglePause());
     pause.querySelector('.pause-levels')?.addEventListener('click', () => this.quitToLevelSelect());
+
+    const orientationGate = document.createElement('div');
+    orientationGate.className = 'orientation-gate';
+    orientationGate.setAttribute('aria-hidden', 'true');
+    orientationGate.innerHTML = `<section class="orientation-gate-card" role="dialog" aria-modal="true" aria-labelledby="orientation-gate-title"><span class="orientation-phone" aria-hidden="true"></span><p class="orientation-gate-kicker">THE HEIST PLAYS BEST WIDE</p><h2 id="orientation-gate-title">Turn your phone sideways</h2><p>We’ll start your level as soon as your screen is in landscape.</p><button class="orientation-gate-back" type="button">BACK TO LEVEL SELECT</button></section>`;
+    mount.append(orientationGate);
+    this.orientationGate = orientationGate;
+    orientationGate.querySelector('.orientation-gate-back')?.addEventListener('click', () => {
+      if (this.orientationResumeState) {
+        this.orientationResumeState = undefined;
+        this.quitToLevelSelect();
+        return;
+      }
+      this.pendingLandscapeLevel = undefined;
+      this.hideOrientationGate();
+    });
+    window.addEventListener('resize', () => this.handleOrientationChange(), { passive: true });
+    window.addEventListener('orientationchange', () => this.handleOrientationChange(), { passive: true });
 
     if (this.touchControlsVisible) {
       const touch = document.createElement('div');
@@ -567,6 +676,80 @@ class HeistScene extends Phaser.Scene {
       });
     }
     this.syncSettingsMenu();
+  }
+
+  private requiresLandscape() {
+    return this.touchControlsVisible && window.matchMedia('(orientation: portrait)').matches;
+  }
+
+  private handleOrientationChange() {
+    if (this.orientationFrame !== undefined) window.cancelAnimationFrame(this.orientationFrame);
+    this.orientationFrame = window.requestAnimationFrame(() => {
+      this.orientationFrame = undefined;
+      const portrait = this.requiresLandscape();
+
+      if (this.pendingLandscapeLevel !== undefined) {
+        if (portrait) return;
+        const level = this.pendingLandscapeLevel;
+        this.pendingLandscapeLevel = undefined;
+        this.hideOrientationGate();
+        this.startGame(level);
+        return;
+      }
+
+      if (portrait && (this.state === 'playing' || this.state === 'paused')) {
+        if (!this.orientationResumeState) this.orientationResumeState = this.state;
+        this.state = 'paused';
+        this.touchLeft = false;
+        this.touchRight = false;
+        this.touchJumpPressed = false;
+        this.touchJumpHeld = false;
+        this.updateOrientationGate(true);
+        this.orientationGate?.classList.add('is-visible');
+        this.orientationGate?.setAttribute('aria-hidden', 'false');
+        this.pauseMenu?.classList.remove('is-visible');
+        this.settingsMenu?.classList.remove('is-visible');
+        this.updateMusicMix();
+        this.drawHud(true);
+        return;
+      }
+
+      if (!portrait && this.orientationResumeState) {
+        const resumeState = this.orientationResumeState;
+        this.orientationResumeState = undefined;
+        this.hideOrientationGate();
+        this.state = resumeState;
+        this.pauseMenu?.classList.toggle('is-visible', resumeState === 'paused' && !this.settingsOpen);
+        this.settingsMenu?.classList.toggle('is-visible', resumeState === 'paused' && this.settingsOpen);
+        this.updateMusicMix();
+        this.drawHud(resumeState === 'paused');
+      }
+    });
+  }
+
+  private updateOrientationGate(inGame: boolean) {
+    const gate = this.orientationGate;
+    if (!gate) return;
+    const kicker = gate.querySelector<HTMLElement>('.orientation-gate-kicker');
+    const title = gate.querySelector<HTMLElement>('#orientation-gate-title');
+    const description = gate.querySelector<HTMLElement>('.orientation-gate-card p:not(.orientation-gate-kicker)');
+    const button = gate.querySelector<HTMLButtonElement>('.orientation-gate-back');
+    if (inGame) {
+      if (kicker) kicker.textContent = 'YOUR HEIST IS PAUSED';
+      if (title) title.textContent = 'Turn your phone back';
+      if (description) description.textContent = 'Your level, timer and progress are saved while you rotate.';
+      if (button) button.textContent = 'EXIT TO LEVEL SELECT';
+    } else {
+      if (kicker) kicker.textContent = 'THE HEIST PLAYS BEST WIDE';
+      if (title) title.textContent = 'Turn your phone sideways';
+      if (description) description.textContent = 'We’ll start your level as soon as your screen is in landscape.';
+      if (button) button.textContent = 'BACK TO LEVEL SELECT';
+    }
+  }
+
+  private hideOrientationGate() {
+    this.orientationGate?.classList.remove('is-visible');
+    this.orientationGate?.setAttribute('aria-hidden', 'true');
   }
 
   private toggleSettings() {
@@ -599,6 +782,7 @@ class HeistScene extends Phaser.Scene {
     } else if (index === 1) {
       this.soundEnabled = !this.soundEnabled;
       localStorage.setItem('fagiolo-sound-enabled', String(this.soundEnabled));
+      this.updateSfxMix();
       if (this.soundEnabled) this.playGameSound('power');
     } else if (index === 2) {
       this.screenShakeEnabled = !this.screenShakeEnabled;
@@ -623,16 +807,37 @@ class HeistScene extends Phaser.Scene {
         button.setAttribute('aria-pressed', String(enabled));
       }
     });
+    for (const [kind, value] of [['music', this.musicVolume], ['effects', this.soundEffectsVolume]] as const) {
+      const range = this.settingsMenu?.querySelector<HTMLInputElement>(`#${kind}-volume-range`);
+      if (range) {
+        range.value = String(Math.round(value * 100));
+        range.parentElement?.querySelector('output')?.replaceChildren(`${range.value}%`);
+      }
+    }
   }
 
   private quitToLevelSelect() {
+    this.pendingLandscapeLevel = undefined;
+    this.orientationResumeState = undefined;
+    this.hideOrientationGate();
     this.returnToTitle();
     this.showLevelSelect();
+  }
+
+  private retryCurrentLevel() {
+    if (this.state !== 'lost' && this.state !== 'timeout') return;
+    const levelToRetry = this.levelIndex;
+    this.gameResultActions?.classList.remove('is-visible');
+    this.startGame(levelToRetry);
   }
 
   private returnToTitle() {
     this.state = 'title';
     this.settingsOpen = false;
+    this.pendingLandscapeLevel = undefined;
+    this.orientationResumeState = undefined;
+    this.hideOrientationGate();
+    this.gameResultActions?.classList.remove('is-visible');
     this.levelMenu?.classList.remove('is-visible');
     this.gameTopControls?.classList.remove('is-visible');
     this.touchControlMenu?.classList.remove('is-visible');
@@ -665,14 +870,25 @@ class HeistScene extends Phaser.Scene {
     this.coinSprites.forEach(sprite => sprite.setVisible(false));
     this.powerupSprites.forEach(sprite => sprite.setVisible(false));
     this.modalArt?.clear().setVisible(false);
-    for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue', 'modalTitle', 'modalBody', 'modalButtonText']) {
+    for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue', 'modalTitle', 'modalBody', 'modalButtonText', 'modalSecondaryButtonText']) {
       ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
     }
     for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
       ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(false));
     }
+    this.setLandingBackdrop();
+    this.updateMusicMix();
+  }
+
+  private setLandingBackdrop() {
     const gameSurface = document.getElementById('game');
-    if (gameSurface) gameSurface.style.background = "#102744 url('/assets/fagiolo-landing-art.png') 62% center / 115% auto no-repeat";
+    if (!gameSurface) return;
+    const portraitPhone = window.matchMedia('(orientation: portrait)').matches && window.innerWidth <= 760;
+    gameSurface.style.backgroundColor = '#102744';
+    gameSurface.style.backgroundImage = "url('/assets/fagiolo-landing-art.png')";
+    gameSurface.style.backgroundRepeat = 'no-repeat';
+    gameSurface.style.backgroundPosition = portraitPhone ? '58% center' : '62% center';
+    gameSurface.style.backgroundSize = portraitPhone ? 'auto 100%' : '115% auto';
   }
 
   private toggleFullscreen() {
@@ -690,29 +906,41 @@ class HeistScene extends Phaser.Scene {
       this.musicBus = this.audioContext.createGain();
       this.musicBus.connect(this.audioContext.destination);
     }
-    this.musicBus.gain.setTargetAtTime(0.11, this.audioContext.currentTime, 0.16);
+    this.updateMusicMix();
     if (this.musicTimer !== undefined) return;
-    const melody = [392, 0, 494, 587, 659, 587, 494, 0, 392, 0, 330, 392, 494, 0, 587, 494];
-    const bass = [98, 0, 0, 0, 110, 0, 0, 0, 82, 0, 0, 0, 98, 0, 0, 0];
-    const playNote = (frequency: number, wave: OscillatorType, peak: number, duration: number) => {
+    const melody = [587, 0, 698, 659, 523, 0, 440, 0, 587, 0, 523, 440, 392, 0, 349, 0, 440, 0, 523, 587, 659, 0, 587, 0, 523, 0, 440, 392, 349, 0, 392, 0];
+    const bass = [73.42, 0, 0, 0, 110, 0, 0, 0, 65.41, 0, 0, 0, 98, 0, 0, 0, 58.27, 0, 0, 0, 87.31, 0, 0, 0, 55, 0, 0, 0, 82.41, 0, 0, 0];
+    const chords = [[146.83, 174.61, 220], [130.81, 164.81, 196], [116.54, 146.83, 174.61], [110, 146.83, 174.61]];
+    const beat = 60 / 112 / 2;
+    const playNote = (frequency: number, wave: OscillatorType, peak: number, duration: number, start: number) => {
       if (!frequency || !this.audioContext || !this.musicBus) return;
-      const start = this.audioContext.currentTime + 0.012;
       const oscillator = this.audioContext.createOscillator();
       const envelope = this.audioContext.createGain();
       oscillator.type = wave;
       oscillator.frequency.setValueAtTime(frequency, start);
       envelope.gain.setValueAtTime(0.0001, start);
-      envelope.gain.exponentialRampToValueAtTime(peak, start + 0.018);
+      envelope.gain.exponentialRampToValueAtTime(peak, start + 0.025);
       envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
       oscillator.connect(envelope); envelope.connect(this.musicBus);
       oscillator.start(start); oscillator.stop(start + duration + 0.02);
     };
+    this.nextMusicTime = this.audioContext.currentTime + 0.06;
     this.musicTimer = window.setInterval(() => {
       if (!this.musicEnabled || !this.audioContext || this.audioContext.state !== 'running') return;
-      const step = this.musicStep++ % melody.length;
-      playNote(melody[step], 'triangle', 0.11, 0.24);
-      if (step % 4 === 0) playNote(bass[step], 'sine', 0.28, 0.48);
-    }, 300);
+      const now = this.audioContext.currentTime;
+      if (this.nextMusicTime < now - beat) this.nextMusicTime = now + 0.04;
+      const horizon = now + 0.12;
+      while (this.nextMusicTime < horizon) {
+        const step = this.musicStep++ % melody.length;
+        const at = this.nextMusicTime;
+        playNote(melody[step], 'triangle', 0.2, beat * 0.78, at);
+        playNote(bass[step], 'sine', 0.24, beat * 1.65, at);
+        if (step % 8 === 0) {
+          for (const note of chords[Math.floor(step / 8)]) playNote(note, 'triangle', 0.025, beat * 3.7, at);
+        }
+        this.nextMusicTime += beat;
+      }
+    }, 25);
   }
 
   private stopBackgroundMusic() {
@@ -723,8 +951,16 @@ class HeistScene extends Phaser.Scene {
 
   private updateMusicMix() {
     if (!this.musicBus || !this.audioContext) return;
-    const volume = this.state === 'playing' ? 0.11 : 0.075;
-    this.musicBus.gain.setTargetAtTime(this.musicEnabled ? volume : 0.0001, this.audioContext.currentTime, 0.16);
+    const sceneMix = this.state === 'playing' ? 0.42 : this.state === 'paused' ? 0.1 : 0.2;
+    const volume = this.musicEnabled ? sceneMix * this.musicVolume : 0.0001;
+    this.musicBus.gain.setTargetAtTime(volume, this.audioContext.currentTime, 0.24);
+  }
+
+  private updateSfxMix() {
+    if (this.sfxBus && this.audioContext) {
+      const volume = this.soundEnabled ? 0.72 * this.soundEffectsVolume : 0.0001;
+      this.sfxBus.gain.setTargetAtTime(volume, this.audioContext.currentTime, 0.08);
+    }
   }
 
   private showLevelSelect() {
@@ -738,6 +974,9 @@ class HeistScene extends Phaser.Scene {
     this.titleImage?.setActive(false).setVisible(false);
     this.titleLayer?.setActive(false).setVisible(false);
     this.levelMenu?.classList.add('is-visible');
+    this.startBackgroundMusic();
+    this.updateMusicMix();
+    this.playGameSound('menu');
     const cards = this.levelMenu?.querySelectorAll<HTMLButtonElement>('.level-card');
     cards?.forEach((card, index) => {
       card.disabled = index > this.unlockedLevel;
@@ -747,6 +986,18 @@ class HeistScene extends Phaser.Scene {
 
   private startGame(level = this.levelIndex) {
     if (this.state === 'playing' || this.state === 'paused') return;
+    if (this.requiresLandscape()) {
+      this.pendingLandscapeLevel = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+      this.updateOrientationGate(false);
+      this.orientationGate?.classList.add('is-visible');
+      this.orientationGate?.setAttribute('aria-hidden', 'false');
+      return;
+    }
+    this.pendingLandscapeLevel = undefined;
+    this.orientationResumeState = undefined;
+    this.gameResultActions?.classList.remove('is-visible');
+    this.orientationGate?.classList.remove('is-visible');
+    this.orientationGate?.setAttribute('aria-hidden', 'true');
     this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
     this.levelMenu?.classList.remove('is-visible');
     this.landingMenu?.classList.remove('is-visible');
@@ -958,13 +1209,13 @@ class HeistScene extends Phaser.Scene {
 
   private resizeGameView(width: number, height: number) {
     if (!width || !height) return;
-    // Keep the camera's world-space view at the design size. The canvas is
-    // resized to the browser viewport, so separate axis zooms fill it without
-    // exposing neighboring level sections on wide desktop screens.
-    const zoomX = 1;
-    const zoomY = 1;
-    const viewWidth = width;
-    const viewHeight = height;
+    // Scale the game world uniformly to fit short landscape screens. This keeps
+    // characters and platforms in proportion while letting wide screens reveal
+    // more of the level horizontally.
+    const zoomX = Math.min(1, width / W, height / H);
+    const zoomY = zoomX;
+    const viewWidth = width / zoomX;
+    const viewHeight = height / zoomY;
     this.cameras.main.setViewport(0, 0, viewWidth, viewHeight);
     this.viewOffsetX = Math.max(0, (viewWidth - W) / 2);
     this.viewOffsetY = Math.max(0, (viewHeight - H) / 2);
@@ -999,6 +1250,7 @@ class HeistScene extends Phaser.Scene {
     this.titleStartZone?.setPosition(543 + this.viewOffsetX, 640 + this.viewOffsetY);
     this.levelBanner?.setPosition(viewWidth / 2, 145 + this.viewOffsetY);
     this.modalButtonZone?.setPosition(viewWidth / 2, viewHeight / 2 + 142);
+    if (this.state === 'title') this.setLandingBackdrop();
   }
 
   private activatePowerup(index: number) {
@@ -1015,7 +1267,7 @@ class HeistScene extends Phaser.Scene {
     }
   }
 
-  private playGameSound(kind: 'start' | 'jump' | 'coin' | 'power' | 'guard' | 'hit' | 'chest' | 'win' | 'lose') {
+  private playGameSound(kind: 'start' | 'menu' | 'jump' | 'coin' | 'power' | 'guard' | 'hit' | 'chest' | 'win' | 'lose') {
     if (!this.soundEnabled) return;
     const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
@@ -1023,11 +1275,12 @@ class HeistScene extends Phaser.Scene {
     if (this.audioContext.state === 'suspended') void this.audioContext.resume();
     if (!this.sfxBus) {
       this.sfxBus = this.audioContext.createGain();
-      this.sfxBus.gain.value = 0.72;
+      this.sfxBus.gain.value = 0.72 * this.soundEffectsVolume;
       this.sfxBus.connect(this.audioContext.destination);
     }
     const patterns: Record<typeof kind, { notes: number[]; wave: OscillatorType; duration: number; volume: number }> = {
       start: { notes: [523, 659, 784], wave: 'triangle', duration: 0.12, volume: 0.045 },
+      menu: { notes: [659, 784], wave: 'sine', duration: 0.17, volume: 0.022 },
       jump: { notes: [360, 540], wave: 'sine', duration: 0.09, volume: 0.035 },
       coin: { notes: [880, 1320], wave: 'sine', duration: 0.075, volume: 0.035 },
       power: { notes: [440, 660, 880], wave: 'triangle', duration: 0.11, volume: 0.04 },
@@ -1062,7 +1315,7 @@ class HeistScene extends Phaser.Scene {
     this.time.delayedCall(600, () => emitter.destroy());
   }
 
-  private finishRun(result: 'won' | 'lost') {
+  private finishRun(result: 'won' | 'lost' | 'timeout') {
     if (this.state !== 'playing') return;
     if (result === 'won') {
       const collected = this.coins.filter(coin => coin.taken).length;
@@ -1078,9 +1331,9 @@ class HeistScene extends Phaser.Scene {
       this.unlockedLevel = Math.max(this.unlockedLevel, this.levelIndex + 1);
       localStorage.setItem('fagiolo-unlocked-level', String(this.unlockedLevel));
     }
-    this.titleStartZone?.setInteractive();
     this.playGameSound(result === 'won' ? 'win' : 'lose');
     if (result === 'won') this.emitBurst(this.player.x, this.player.y - 48, 0xffd365, 26);
+    this.drawHud(false);
   }
 
   update(_time: number, delta: number) {
@@ -1106,7 +1359,15 @@ class HeistScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown((this.keys as any).power2)) this.activatePowerup(1);
     if (Phaser.Input.Keyboard.JustDown((this.keys as any).power3)) this.activatePowerup(2);
     if (Phaser.Input.Keyboard.JustDown((this.keys as any).power4)) this.activatePowerup(3);
-    if (this.elapsed >= 1) { this.timeLeft = Math.max(0, this.timeLeft - 1); this.elapsed = 0; }
+    if (this.elapsed >= 1) {
+      const elapsedSeconds = Math.floor(this.elapsed);
+      this.timeLeft = Math.max(0, this.timeLeft - elapsedSeconds);
+      this.elapsed -= elapsedSeconds;
+    }
+    if (this.timeLeft <= 0) {
+      this.finishRun('timeout');
+      return;
+    }
     const left = this.touchLeft || this.keys.left.isDown || this.keys.a.isDown || !!this.cursors?.left.isDown;
     const right = this.touchRight || this.keys.right.isDown || this.keys.d.isDown || !!this.cursors?.right.isDown;
     const jumpPressed = this.touchJumpPressed || Phaser.Input.Keyboard.JustDown(this.keys.jump) || Phaser.Input.Keyboard.JustDown(this.keys.w) || Phaser.Input.Keyboard.JustDown(this.keys.space) || !!(this.cursors && Phaser.Input.Keyboard.JustDown(this.cursors.up));
@@ -1225,7 +1486,7 @@ class HeistScene extends Phaser.Scene {
       this.chestOpened = true; this.chestAnimTimer = 0; this.playGameSound('chest'); this.emitBurst(levelEnd - 110, 690, 0xffd365, 18);
     }
     if (this.player.x >= levelEnd - 180 && this.chestOpened && this.chestAnimTimer >= 1.05) this.finishRun('won');
-    if (this.timeLeft <= 0 && this.state === 'playing') this.finishRun('lost');
+    if (this.timeLeft <= 0 && this.state === 'playing') this.finishRun('timeout');
     this.drawWorld();
     this.hudRefreshTimer += dt;
     if (this.hudRefreshTimer >= 0.05) {
@@ -1755,43 +2016,57 @@ class HeistScene extends Phaser.Scene {
   private drawHud(_paused: boolean) {
     const g = this.hud;
     g.clear();
-    const viewWidth = this.scale.width / this.cameras.main.zoomX;
-    const viewHeight = this.scale.height / this.cameras.main.zoomY;
+    const hudScale = 1 / this.cameras.main.zoomX;
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
+    const uiX = (x: number) => centerX + (x - centerX) * hudScale;
+    const uiY = (y: number) => centerY + (y - centerY) * hudScale;
+    // Phaser zooms around the camera center. Offset the fixed HUD layers so
+    // their screen-space coordinates stay pinned to the viewport edges.
+    g.setPosition(centerX * (1 - hudScale), centerY * (1 - hudScale)).setScale(hudScale);
+    // HUD layout is authored in screen pixels; counter-scale its game objects
+    // so the camera's world zoom does not shrink the text or touch gadgets.
+    const viewWidth = this.scale.width;
+    const viewHeight = this.scale.height;
     const extraWidth = Math.max(0, viewWidth - W);
-    const compactTouchHud = viewWidth < 700;
+    const compactTouchHud = viewWidth < 700 || (viewWidth < 1100 && this.scale.height < 600);
     const ensureText = (key: string, x: number, y: number, style: any) => {
       const owner = this as any;
       if (!owner[key]) owner[key] = this.add.text(x, y, '', style).setDepth(9).setScrollFactor(0);
-      return (owner[key] as Phaser.GameObjects.Text).setPosition(x, y);
+      return (owner[key] as Phaser.GameObjects.Text).setPosition(uiX(x), uiY(y)).setScale(hudScale);
     };
-    const labelStyle = { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.8, stroke: '#09141c', strokeThickness: 3, shadow: { color: '#07121a', blur: 6, fill: true, offsetX: 1, offsetY: 2 } };
-    const valueStyle = { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '26px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 4, shadow: { color: '#07121a', blur: 7, fill: true, offsetX: 1, offsetY: 2 } };
+    const labelStyle = { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#f0f5f7', letterSpacing: 1.2, stroke: '#071625', strokeThickness: 1 };
+    const valueStyle = { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '27px', color: '#fffdf5', stroke: '#071625', strokeThickness: 2 };
     // Floating instrument readouts sit directly over the scene, without a shared rail.
 
     if (compactTouchHud) {
-      const left = 10, top = 78, panelWidth = Math.max(0, viewWidth - 20);
-      const timerX = Math.round(viewWidth * 0.35);
-      const beansX = Math.round(viewWidth * 0.68);
-      g.fillStyle(0x061a2d, 0.62); g.fillRoundedRect(left, top, panelWidth, 72, 12);
-      g.lineStyle(1, 0xb3d4ed, 0.28); g.strokeRoundedRect(left, top, panelWidth, 72, 12);
-      ensureText('scoreLabel', 17, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 1 }).setText('SCORE');
-      ensureText('scoreText', 17, 98, { ...valueStyle, fontSize: '20px' }).setText(String(this.score).padStart(5, '0'));
-      ensureText('timerLabel', timerX, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 1 }).setText('TIME');
-      const timerText = ensureText('timerText', timerX, 98, { ...valueStyle, fontSize: '20px' });
+      // Keep all five readouts on one baseline and stop the rail before the
+      // pause/settings/exit buttons at the upper-right corner.
+      const left = 8, top = 8, rightReserve = 178;
+      const panelWidth = Math.max(0, viewWidth - left * 2 - rightReserve);
+      const slotWidth = panelWidth / 5;
+      const slotX = (index: number) => left + slotWidth * index + 8;
+      const labelY = top + 6, valueY = top + 21;
+      g.fillStyle(0x061a2d, 0.84); g.fillRoundedRect(left, top, panelWidth, 50, 10);
+      g.lineStyle(1, 0xb3d4ed, 0.44); g.strokeRoundedRect(left, top, panelWidth, 50, 10);
+      ensureText('scoreLabel', slotX(0), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('SCORE');
+      ensureText('scoreText', slotX(0), valueY, { ...valueStyle, fontSize: '17px' }).setText(String(this.score).padStart(5, '0'));
+      ensureText('timerLabel', slotX(1), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('TIME');
+      const timerText = ensureText('timerText', slotX(1), valueY, { ...valueStyle, fontSize: '17px' });
       timerText.setText(`${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
       timerText.setColor(this.timeLeft <= 15 ? '#ff707c' : '#ffffff');
-      ensureText('coinsLabel', beansX, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('BEANS');
+      ensureText('coinsLabel', slotX(2), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('BEANS');
       const collected = this.coins.filter(coin => coin.taken).length;
-      ensureText('coinsText', beansX, 98, { ...valueStyle, fontSize: '18px' }).setText(`${collected}/${this.coins.length}`);
-      ensureText('livesLabel', 17, 132, { ...labelStyle, fontSize: '8px', letterSpacing: 0.8 }).setText('LIVES');
+      ensureText('coinsText', slotX(2), valueY, { ...valueStyle, fontSize: '16px' }).setText(`${collected}/${this.coins.length}`);
+      ensureText('livesLabel', slotX(3), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LIVES');
       for (let i = 0; i < 4; i++) {
-        const x = 67 + i * 14, y = 137;
+        const x = slotX(3) + 4 + i * 9, y = top + 35;
         g.fillStyle(i < this.lives ? 0xff4e6d : 0x485b78, 1);
-        g.fillCircle(x - 3, y - 2, 4); g.fillCircle(x + 3, y - 2, 4); g.fillTriangle(x - 7, y, x + 7, y, x, y + 8);
+        g.fillCircle(x - 2, y - 1, 2.5); g.fillCircle(x + 2, y - 1, 2.5); g.fillTriangle(x - 4.5, y, x + 4.5, y, x, y + 5);
       }
-      ensureText('livesCount', 128, 130, { ...labelStyle, fontSize: '9px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives}/4`);
-      ensureText('routeLabel', Math.max(205, viewWidth - 91), 130, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LEVEL');
-      ensureText('routeValue', Math.max(248, viewWidth - 54), 128, { ...valueStyle, fontSize: '12px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
+      ensureText('livesCount', slotX(3) + 45, valueY + 2, { ...labelStyle, fontSize: '10px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives}/4`);
+      ensureText('routeLabel', slotX(4), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LEVEL');
+      ensureText('routeValue', slotX(4), valueY, { ...valueStyle, fontSize: '15px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
     } else {
 
     // Score
@@ -1841,7 +2116,13 @@ class HeistScene extends Phaser.Scene {
 
     // Individual gadget controls use the same refined language as pause and settings.
     const compactHud = viewWidth < 1100;
-    const powerupXs = compactTouchHud ? [34, 96, 34, 96] : compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
+    const gadgetSize = Phaser.Math.Clamp((viewWidth - 266) / 4, 30, 48);
+    const gadgetGap = compactTouchHud ? 6 : 0;
+    const gadgetRowCenter = (Math.max(160, viewWidth - 86) + 160) / 2;
+    const gadgetStep = gadgetSize + gadgetGap;
+    const powerupXs = compactTouchHud
+      ? [0, 1, 2, 3].map(index => gadgetRowCenter + (index - 1.5) * gadgetStep)
+      : compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
     const powerups = [
       { x: powerupXs[0], title: 'SPEED', color: 0xffcf22, status: this.speedTimer > 0 ? `${Math.ceil(this.speedTimer)}s` : 'READY' },
       { x: powerupXs[1], title: 'CLOAK', color: 0x88e9ff, status: this.invisibilityTimer > 0 ? `${Math.ceil(this.invisibilityTimer)}s` : 'READY' },
@@ -1852,13 +2133,13 @@ class HeistScene extends Phaser.Scene {
     for (const [i, power] of powerups.entries()) {
       const activePowerup = i === 0 ? this.speedTimer > 0 : i === 1 ? this.invisibilityTimer > 0 : i === 2 ? this.magnetTimer > 0 : this.extraLifeAvailable;
       const pulse = (Math.sin(this.animTime * (activePowerup ? 8 : 3) + i * 1.4) + 1) / 2;
-      const iconScale = 1 + pulse * (activePowerup ? 0.075 : 0.025);
+      const iconScale = 1;
       const hovered = this.gadgetHover[i];
-      const cardWidth = compactTouchHud ? 54 : compactHud ? 112 : 132;
-      const cardHeight = compactTouchHud ? 48 : 86;
+      const cardWidth = compactTouchHud ? gadgetSize : compactHud ? 112 : 132;
+      const cardHeight = compactTouchHud ? gadgetSize : 86;
       const controlX = power.x;
-      const cardTop = compactTouchHud ? viewHeight - 178 + (i >= 2 ? 52 : 0) : cardY + 2;
-      this.powerupZones[i]?.setPosition(controlX, cardTop + cardHeight / 2).setSize(cardWidth + 8, cardHeight + 12);
+      const cardTop = compactTouchHud ? viewHeight - cardHeight - 9 : cardY + 2;
+      this.powerupZones[i]?.setPosition(uiX(controlX), uiY(cardTop + cardHeight / 2)).setSize((cardWidth + 8) * hudScale, (cardHeight + 12) * hudScale);
       const cardLit = activePowerup || hovered;
       g.fillStyle(0x041a3d, hovered ? 0.84 : 0.72); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
       g.fillStyle(cardLit ? 0x1477d4 : 0x0a4c9b, 0.98); g.fillRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
@@ -1870,46 +2151,56 @@ class HeistScene extends Phaser.Scene {
         g.fillStyle(power.color, activePowerup ? 0.94 : 0.58); g.fillRoundedRect(controlX - 42, cardTop + cardHeight - 4, 84, 2.5, 2);
       }
       this.powerupSprites[i]
-        .setPosition(compactTouchHud ? controlX : controlX - 32, cardTop + (compactTouchHud ? 22 : 37) + Math.sin(this.animTime * 3 + i) * 1.5)
-        .setDisplaySize((compactTouchHud ? 27 : 39) * iconScale, (compactTouchHud ? 27 : 39) * iconScale)
+        .setPosition(uiX(compactTouchHud ? controlX : controlX - 32), uiY(cardTop + (compactTouchHud ? cardHeight / 2 : 36)))
+        .setDisplaySize((compactTouchHud ? Math.min(26, gadgetSize * 0.52) : 34) * iconScale * hudScale, (compactTouchHud ? Math.min(26, gadgetSize * 0.52) : 34) * iconScale * hudScale)
         .setDepth(9)
         .setVisible(true)
         .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
       if (compactTouchHud) {
-        g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 18, cardTop + 32, 9);
-        g.lineStyle(1.5, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 18, cardTop + 32, 9);
+        const badgeRadius = gadgetSize < 38 ? 7 : 8;
+        const badgeX = controlX + cardWidth / 2 - badgeRadius;
+        const badgeY = cardTop + cardHeight - badgeRadius;
+        g.fillStyle(0x062d63, 1); g.fillCircle(badgeX, badgeY, badgeRadius);
+        g.lineStyle(1.3, power.color, hovered || activePowerup ? 1 : 0.92); g.strokeCircle(badgeX, badgeY, badgeRadius);
       } else {
         g.fillStyle(power.color, activePowerup ? 0.95 : 0.55); g.fillCircle(controlX - 32, cardTop + 67, 2.3);
         g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 43, cardTop + 64, 12);
         g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 43, cardTop + 64, 12);
       }
-      if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x - 7, cardY + 24, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.05, stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 24).setText(power.title).setVisible(!compactTouchHud);
-      if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x - 7, cardY + 43, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 43).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff').setVisible(!compactTouchHud);
-      if (!(this as any).powerupKeys) (this as any).powerupKeys = powerups.map((_, key) => this.add.text(powerups[key].x + 43, cardY + 66, String(key + 1), { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff4d6', stroke: '#06121b', strokeThickness: 2 }).setOrigin(0.5).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(compactTouchHud ? controlX + 18 : controlX + 43, compactTouchHud ? cardTop + 32 : cardY + 66).setVisible(true);
+      if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x - 7, cardY + 24, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f4f7f2', letterSpacing: 0.8, stroke: '#061525', strokeThickness: 1 }).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX - 7), uiY(cardY + 24)).setScale(hudScale).setText(power.title).setVisible(!compactTouchHud);
+      if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x - 7, cardY + 43, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fffdf5', stroke: '#061525', strokeThickness: 1 }).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX - 7), uiY(cardY + 43)).setScale(hudScale).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff').setVisible(!compactTouchHud);
+      if (!(this as any).powerupKeys) (this as any).powerupKeys = powerups.map((_, key) => this.add.text(powerups[key].x + 43, cardY + 66, String(key + 1), { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', color: '#fffdf5', stroke: '#06121b', strokeThickness: 1 }).setOrigin(0.5).setDepth(9).setScrollFactor(0));
+      const keyX = compactTouchHud ? controlX + cardWidth / 2 - (gadgetSize < 38 ? 7 : 8) : controlX + 43;
+      const keyY = compactTouchHud ? cardTop + cardHeight - (gadgetSize < 38 ? 7 : 8) : cardY + 66;
+      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(uiX(keyX), uiY(keyY)).setScale(hudScale).setFontSize(compactTouchHud ? (gadgetSize < 38 ? 9 : 11) : 13).setVisible(true);
     }
 
-    const endState = this.state === 'won' || this.state === 'lost';
+    const endState = this.state === 'won' || this.state === 'lost' || this.state === 'timeout';
     const modalOpen = endState;
+    const runFailed = this.state === 'lost' || this.state === 'timeout';
+    this.gameResultActions?.classList.toggle('is-visible', runFailed);
     this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.settingsOpen);
     this.settingsMenu?.classList.toggle('is-visible', this.settingsOpen);
     const modal = this.modalArt;
+    modal.setPosition(centerX * (1 - hudScale), centerY * (1 - hudScale)).setScale(hudScale);
     modal.clear().setVisible(modalOpen);
     for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue']) {
       const item = (this as any)[key] as Phaser.GameObjects.Text | undefined;
       item?.setVisible(!modalOpen);
     }
     for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
-      ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(!modalOpen));
+      const showOnCompactMobile = groupName === 'powerupKeys';
+      ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text =>
+        text.setVisible(!modalOpen && (showOnCompactMobile || !compactTouchHud)));
     }
     this.powerupSprites.forEach(sprite => sprite.setVisible(!modalOpen));
     if (endState) {
       modal.fillStyle(0x020a18, 0.76); modal.fillRect(0, 0, viewWidth, viewHeight);
       const settings = false;
-      const panelW = 600;
-      const panelH = 360;
+      const panelW = Math.min(600, Math.max(260, viewWidth - 24));
+      const panelH = Math.min(360, Math.max(270, viewHeight - 28));
       const panelX = viewWidth / 2 - panelW / 2;
       const panelY = viewHeight / 2 - panelH / 2;
       modal.fillStyle(0x04122d, 0.72); modal.fillRoundedRect(panelX + 7, panelY + 9, panelW, panelH, 22);
@@ -1927,9 +2218,12 @@ class HeistScene extends Phaser.Scene {
         title = `LEVEL ${this.levelIndex + 1} COMPLETE`;
         body = `${collected} / ${this.coins.length} beans  |  ${raidReward}  |  Score ${this.score}`;
       }
-      else if (this.state === 'lost') { title = 'HEIST OVER'; body = 'Press ENTER or R to start another run.'; }
-      ensureText('modalTitle', viewWidth / 2, panelY + 29, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#fff8e8', align: 'center', letterSpacing: 1 }).setDepth(13).setOrigin(0.5).setText(title).setVisible(true);
-      ensureText('modalBody', viewWidth / 2, panelY + 113, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '17px', color: '#c3d3d6', align: 'center' }).setDepth(13).setOrigin(0.5).setText(body).setVisible(true);
+      else if (this.state === 'timeout') { title = 'TIME IS UP'; body = 'The escape window closed. Try the level again or choose another.'; }
+      else if (this.state === 'lost') { title = 'OUT OF LIVES'; body = 'Fagiolo ran out of lives. Retry this level or choose another.'; }
+      const modalTitleText = ensureText('modalTitle', viewWidth / 2, panelY + 29, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#fff8e8', align: 'center', letterSpacing: 1 }).setDepth(13).setOrigin(0.5).setText(title).setVisible(true);
+      modalTitleText.setFontSize(viewWidth < 600 ? 23 : 30);
+      const modalBodyText = ensureText('modalBody', viewWidth / 2, panelY + 113, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '17px', color: '#c3d3d6', align: 'center' }).setDepth(13).setOrigin(0.5).setText(body).setVisible(true);
+      modalBodyText.setFontSize(viewWidth < 600 ? 14 : 17).setWordWrapWidth(panelW - 36);
       if (settings) {
         const rows = [
           ['MOVE', 'A / D   or   LEFT / RIGHT'],
@@ -1943,29 +2237,43 @@ class HeistScene extends Phaser.Scene {
           modal.fillStyle(0x0e579f, 1); modal.fillRoundedRect(panelX + 86, rowY, panelW - 172, 46, 11);
           modal.lineStyle(1.4, 0xa9d8ff, 0.48); modal.strokeRoundedRect(panelX + 86, rowY, panelW - 172, 46, 11);
           if (!(this as any).settingRows) (this as any).settingRows = rows.map((_, row) => ({
-            label: this.add.text(panelX + 112, panelY + 150 + row * 50 + 12, '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#d6b972', letterSpacing: 1 }).setDepth(13).setScrollFactor(0),
-            value: this.add.text(panelX + 335, panelY + 150 + row * 50 + 10, '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#fff8e8' }).setDepth(13).setScrollFactor(0),
+            label: this.add.text(uiX(panelX + 112), uiY(panelY + 150 + row * 50 + 12), '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#d6b972', letterSpacing: 1 }).setDepth(13).setScrollFactor(0).setScale(hudScale),
+            value: this.add.text(uiX(panelX + 335), uiY(panelY + 150 + row * 50 + 10), '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#fff8e8' }).setDepth(13).setScrollFactor(0).setScale(hudScale),
           }));
           const pair = ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[])[i];
-          pair.label.setPosition(panelX + 112, panelY + 150 + i * 50 + 12).setText(rows[i][0]).setVisible(true);
-          pair.value.setPosition(panelX + 335, panelY + 150 + i * 50 + 10).setText(rows[i][1]).setVisible(true);
+          pair.label.setPosition(uiX(panelX + 112), uiY(panelY + 150 + i * 50 + 12)).setScale(hudScale).setText(rows[i][0]).setVisible(true);
+          pair.value.setPosition(uiX(panelX + 335), uiY(panelY + 150 + i * 50 + 10)).setScale(hudScale).setText(rows[i][1]).setVisible(true);
         }
       }
       if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { if (!settings) { row.label.setVisible(false); row.value.setVisible(false); } });
-      const buttonY = viewHeight / 2 + 142;
-      modal.fillStyle(0x8a4c0d, 1); modal.fillRoundedRect(viewWidth / 2 - 135, buttonY - 23, 270, 54, 15);
-      modal.fillStyle(0xffcf32, 1); modal.fillRoundedRect(viewWidth / 2 - 135, buttonY - 27, 270, 54, 15);
-      modal.lineStyle(2, 0xfff1a5, 1); modal.strokeRoundedRect(viewWidth / 2 - 135, buttonY - 27, 270, 54, 15);
-      const buttonText = this.state === 'won' ? 'CHOOSE NEXT LEVEL' : endState ? 'RETRY LEVEL' : settings ? 'RESUME GAME' : 'RESUME GAME';
-      ensureText('modalButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#173766', align: 'center', letterSpacing: 0.7 }).setDepth(13).setOrigin(0.5).setText(buttonText).setVisible(true);
+      const buttonY = panelY + panelH - 38;
+      const retryButtonText = ensureText('modalButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#173766', align: 'center', letterSpacing: 0.7 }).setDepth(13).setOrigin(0.5);
+      const secondaryButtonText = ensureText('modalSecondaryButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff4d2', align: 'center', letterSpacing: 0.45 }).setDepth(13).setOrigin(0.5);
+      if (runFailed) {
+        this.modalButtonZone?.disableInteractive();
+        retryButtonText.setVisible(false);
+        secondaryButtonText.setVisible(false);
+      } else {
+        const buttonWidth = Math.min(270, panelW - 32);
+        modal.fillStyle(0x8a4c0d, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 23, buttonWidth, 54, 15);
+        modal.fillStyle(0xffcf32, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 54, 15);
+        modal.lineStyle(2, 0xfff1a5, 1); modal.strokeRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 54, 15);
+        this.modalButtonZone?.setPosition(uiX(viewWidth / 2), uiY(buttonY)).setSize(buttonWidth * hudScale, 60 * hudScale).setInteractive();
+        retryButtonText.setPosition(uiX(viewWidth / 2), uiY(buttonY - 13)).setScale(hudScale).setFontSize(viewWidth < 600 ? 14 : 16).setText(this.state === 'won' ? 'CHOOSE NEXT LEVEL' : 'RESUME GAME').setVisible(true);
+        secondaryButtonText.setVisible(false);
+      }
     } else {
-      for (const key of ['modalTitle', 'modalBody', 'modalButtonText']) ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
+      for (const key of ['modalTitle', 'modalBody', 'modalButtonText', 'modalSecondaryButtonText']) ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
+      this.gameResultActions?.classList.remove('is-visible');
       if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { row.label.setVisible(false); row.value.setVisible(false); });
     }
   }
 }
 
-new Phaser.Game({
+const gameHost = window as Window & { __fagioloHeistGame?: Phaser.Game };
+gameHost.__fagioloHeistGame?.destroy(true);
+document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate').forEach(element => element.remove());
+gameHost.__fagioloHeistGame = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   width: window.innerWidth,
@@ -1974,5 +2282,5 @@ new Phaser.Game({
   transparent: true,
   scale: { mode: Phaser.Scale.RESIZE },
   scene: [HeistScene],
-  render: { antialias: true, pixelArt: false },
+  render: { antialias: true, pixelArt: false, resolution: Math.min(window.devicePixelRatio || 1, 1.5) },
 });

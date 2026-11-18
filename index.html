@@ -2,35 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#102b2c" />
     <link rel="icon" type="image/png" href="/assets/bean-idle-0-aligned.png" />
     <link rel="preload" as="image" href="/assets/fagiolo-loader-world.png" fetchpriority="high" />
     <link rel="preload" as="image" href="/assets/bean-walk-0-aligned.png" />
+    <link rel="preload" as="image" href="/assets/bean-walk-1-aligned.png" />
+    <link rel="preload" as="image" href="/assets/bean-walk-2-aligned.png" />
+    <link rel="preload" as="image" href="/assets/bean-walk-3-aligned.png" />
+    <link rel="preload" as="image" href="/assets/bean-walk-4-aligned.png" />
+    <link rel="preload" as="image" href="/assets/bean-walk-5-aligned.png" />
     <title>Fagiolo Heist: The Great Bean Escape</title>
-    <style>
-      #initial-preloader { position: absolute; z-index: 30; inset: 0; overflow: hidden; color: #f5edda; background: linear-gradient(0deg, rgba(11,49,68,.15), rgba(10,46,72,.12)), url('/assets/fagiolo-loader-world.png') center / cover no-repeat; font-family: Arial, sans-serif; }
-      #initial-preloader .loader-copy { position: absolute; top: 7vh; left: 50%; display: flex; align-items: center; gap: 15px; margin: 0; padding: 12px 24px 14px 13px; border: 2px solid rgba(16,47,89,.8); border-radius: 18px; background: linear-gradient(145deg, rgba(12,74,151,.9), rgba(7,46,108,.86)); box-shadow: 0 5px 0 rgba(6,34,78,.78), inset 0 2px 0 rgba(255,255,255,.36); transform: translateX(-50%); white-space: nowrap; }
-      #initial-preloader .loader-avatar { width: 64px; height: 64px; flex: 0 0 64px; object-fit: contain; }
-      #initial-preloader .loader-title { display: flex; gap: 8px; margin: 0; color: #fff8df; font: 400 30px/1 'Lilita One', 'Arial Black', sans-serif; }
-      #initial-preloader .loader-title em { color: #ffe05c; font-style: normal; }
-      #initial-preloader .loader-kicker { margin: 5px 0 0; color: #eff8ff; font: 800 9px 'Nunito Sans', Arial, sans-serif; letter-spacing: .17em; }
-      #initial-preloader .loader-route { position: absolute; bottom: 28vh; left: 50%; width: min(580px, 84vw); height: 150px; margin: 0; transform: translateX(-50%); }
-      #initial-preloader .loader-route::before { position: absolute; z-index: 1; bottom: -42px; left: 50%; width: 100vw; height: 42px; border-top: 7px solid #8bd943; background: linear-gradient(180deg, #6577a4, #263d63); content: ''; transform: translateX(-50%); }
-      #initial-preloader .loader-runner-mover { position: absolute; z-index: 2; bottom: -19px; left: 0; width: 240px; height: 210px; transform: translate3d(-120px, 0, 0); will-change: transform; }
-      #initial-preloader .loader-bean { position: relative; left: auto; bottom: auto; display: block; width: 100%; height: 100%; object-fit: fill; transition: transform .3s cubic-bezier(.2,.8,.2,1), filter .3s; }
-      #initial-preloader .loader-bean.is-jumping { transform: translateY(-62px) rotate(-6deg); }
-      #initial-preloader .loader-progress { position: absolute; bottom: 10vh; left: 50%; display: flex; width: min(510px, 78vw); align-items: center; gap: 13px; padding: 11px 14px; border: 2px solid rgba(17,47,88,.88); border-radius: 12px; background: linear-gradient(145deg, rgba(9,69,144,.92), rgba(6,44,105,.9)); transform: translateX(-50%); }
-      #initial-preloader .loader-track { flex: 1; height: 8px; overflow: hidden; border-radius: 8px; background: rgba(4,32,75,.78); }
-      #initial-preloader .loader-track i { display: block; width: 100%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ffe96b, #ffb91f); transform: scaleX(0); transform-origin: left center; }
-      #initial-preloader .loader-percent { min-width: 35px; margin: 0; color: #fff4c2; font: 400 15px 'Lilita One', 'Arial Black', sans-serif; text-align: right; }
-      #initial-preloader .loader-caption { position: absolute; bottom: 5vh; left: 50%; margin: 0; color: #fff5d3; font: 800 10px 'Nunito Sans', Arial, sans-serif; letter-spacing: .14em; transform: translateX(-50%); white-space: nowrap; }
-      @media (max-width: 700px) { #initial-preloader .loader-copy { max-width: 92vw; gap: 10px; padding: 9px 13px 10px 9px; } #initial-preloader .loader-avatar { width: 52px; height: 52px; flex-basis: 52px; } #initial-preloader .loader-title { font-size: clamp(20px, 6vw, 28px); } #initial-preloader .loader-runner-mover { width: 190px; height: 170px; } #initial-preloader .loader-bean.is-jumping { transform: translateY(-50px) rotate(-6deg); } }
-    </style>
   </head>
   <body>
     <main id="game" aria-label="Fagiolo Heist platform game" style="background: #102744 url('/assets/fagiolo-loader-world.png') center / cover no-repeat">
-      <div id="initial-preloader" class="game-preloader"><div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p></div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
