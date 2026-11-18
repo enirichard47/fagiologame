@@ -214,16 +214,32 @@ class HeistScene extends Phaser.Scene {
     this.load.image('loader-world', '/assets/fagiolo-loader-world.png');
     const mount = document.getElementById('game');
     if (mount) {
-      this.preloader = document.createElement('div');
+      const preloaderFromMarkup = mount.querySelector<HTMLDivElement>('#initial-preloader');
+      this.preloader = preloaderFromMarkup ?? document.createElement('div');
       this.preloader.className = 'game-preloader';
-      this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="loader-route"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
-      mount.append(this.preloader);
+      if (!preloaderFromMarkup) {
+        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
+        mount.append(this.preloader);
+      }
       const loaderStartedAt = performance.now();
       const fill = this.preloader.querySelector('.loader-track i') as HTMLElement;
       const percent = this.preloader.querySelector('.loader-percent') as HTMLElement;
       const runner = this.preloader.querySelector('.loader-bean') as HTMLImageElement;
-      const runnerFrames = Array.from({ length: 6 }, (_, frame) => `/assets/bean-walk-${frame}-aligned.png`);
-      const jumpFrames = Array.from({ length: 4 }, (_, frame) => `/assets/bean-jump-${frame}-aligned.png`);
+      const runnerMover = this.preloader.querySelector('.loader-runner-mover') as HTMLElement;
+      const runnerShadow = this.preloader.querySelector('.route-shadow') as HTMLElement;
+      const route = this.preloader.querySelector('.loader-route') as HTMLElement;
+      const runnerFrames = Array.from({ length: 6 }, (_, frame) => {
+        const image = new Image();
+        image.src = `/assets/bean-walk-${frame}-aligned.png`;
+        return image;
+      });
+      const jumpFrames = Array.from({ length: 4 }, (_, frame) => {
+        const image = new Image();
+        image.src = `/assets/bean-jump-${frame}-aligned.png`;
+        return image;
+      });
+      const routeWidth = route.clientWidth;
+      const runnerWidth = runnerMover.clientWidth;
       let frameIndex = 0;
       let jumping = false;
       let loadReady = false;
@@ -242,12 +258,13 @@ class HeistScene extends Phaser.Scene {
       const animateRunner = () => {
         if (jumping) return;
         frameIndex = (frameIndex + 1) % runnerFrames.length;
-        runner.src = runnerFrames[frameIndex];
+        runner.src = runnerFrames[frameIndex].src;
       };
-      const runnerAnimation = window.setInterval(animateRunner, 290);
+      const runnerAnimation = window.setInterval(animateRunner, 180);
       let jumpPlayed = false;
       let jumpFrame = 0;
       let jumpFrameTimer = 0;
+      let lastPercentValue = -1;
       const animateLoading = (now: number) => {
         const elapsed = Math.min(sceneDuration, now - loaderStartedAt);
         let progress: number;
@@ -260,23 +277,28 @@ class HeistScene extends Phaser.Scene {
           jumping = true;
           runner.classList.add('is-jumping');
           jumpFrame = 0;
-          runner.src = jumpFrames[0];
+          runner.src = jumpFrames[0].src;
           jumpFrameTimer = window.setInterval(() => {
             jumpFrame = Math.min(jumpFrames.length - 1, jumpFrame + 1);
-            runner.src = jumpFrames[jumpFrame];
+            runner.src = jumpFrames[jumpFrame].src;
           }, 135);
           window.setTimeout(() => {
             window.clearInterval(jumpFrameTimer);
             jumping = false;
             runner.classList.remove('is-jumping');
-            runner.src = runnerFrames[frameIndex];
+            runner.src = runnerFrames[frameIndex].src;
           }, 600);
         }
 
         const percentValue = Math.round(progress * 100);
-        fill.style.width = `${percentValue}%`;
-        percent.textContent = `${percentValue}%`;
-        runner.style.left = `calc(${percentValue}% - 120px)`;
+        fill.style.transform = `scaleX(${progress})`;
+        if (percentValue !== lastPercentValue) {
+          percent.textContent = `${percentValue}%`;
+          lastPercentValue = percentValue;
+        }
+        const runnerX = routeWidth * progress - runnerWidth / 2;
+        runnerMover.style.transform = `translate3d(${runnerX}px, 0, 0)`;
+        runnerShadow.style.transform = `translate3d(${runnerX + runnerWidth / 2}px, 0, 0) translateX(-50%)`;
         if (elapsed >= sceneDuration) {
           sceneFinished = true;
           finishIfReady();
@@ -381,6 +403,8 @@ class HeistScene extends Phaser.Scene {
     landing.className = 'landing-menu is-visible';
     landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span><span class="nav-caption">THE GREAT BEAN ESCAPE</span><span class="nav-chip">A CASTLE ADVENTURE</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> THE GREAT BEAN ESCAPE</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">A quiet castle. A watchful guard. One very determined bean with everything to gain.</p><button class="landing-cta" type="button"><span>ENTER THE CASTLE</span><b>→</b></button><div class="hero-meta"><span>THREE WINGS</span><span>ONE DARING GETAWAY</span></div></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>JUMP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">A LITTLE CUNNING GOES A LONG WAY.</span></footer>`;
     document.getElementById('game')?.append(landing);
+    const gameSurface = document.getElementById('game');
+    if (gameSurface) gameSurface.style.background = "#102744 url('/assets/fagiolo-landing-art.png') 62% center / 115% auto no-repeat";
     this.landingMenu = landing;
     landing.querySelector('.landing-cta')?.addEventListener('click', () => {
       this.playGameSound('start');
@@ -648,7 +672,7 @@ class HeistScene extends Phaser.Scene {
       ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(false));
     }
     const gameSurface = document.getElementById('game');
-    if (gameSurface) gameSurface.style.backgroundImage = "url('/assets/fagiolo-landing-art.png')";
+    if (gameSurface) gameSurface.style.background = "#102744 url('/assets/fagiolo-landing-art.png') 62% center / 115% auto no-repeat";
   }
 
   private toggleFullscreen() {
@@ -1206,7 +1230,7 @@ class HeistScene extends Phaser.Scene {
     this.hudRefreshTimer += dt;
     if (this.hudRefreshTimer >= 0.05) {
       this.hudRefreshTimer %= 0.05;
-      this.drawHud(this.state === 'paused');
+      this.drawHud(false);
     }
   }
 
@@ -1734,6 +1758,7 @@ class HeistScene extends Phaser.Scene {
     const viewWidth = this.scale.width / this.cameras.main.zoomX;
     const viewHeight = this.scale.height / this.cameras.main.zoomY;
     const extraWidth = Math.max(0, viewWidth - W);
+    const compactTouchHud = viewWidth < 700;
     const ensureText = (key: string, x: number, y: number, style: any) => {
       const owner = this as any;
       if (!owner[key]) owner[key] = this.add.text(x, y, '', style).setDepth(9).setScrollFactor(0);
@@ -1742,6 +1767,32 @@ class HeistScene extends Phaser.Scene {
     const labelStyle = { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.8, stroke: '#09141c', strokeThickness: 3, shadow: { color: '#07121a', blur: 6, fill: true, offsetX: 1, offsetY: 2 } };
     const valueStyle = { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '26px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 4, shadow: { color: '#07121a', blur: 7, fill: true, offsetX: 1, offsetY: 2 } };
     // Floating instrument readouts sit directly over the scene, without a shared rail.
+
+    if (compactTouchHud) {
+      const left = 10, top = 78, panelWidth = Math.max(0, viewWidth - 20);
+      const timerX = Math.round(viewWidth * 0.35);
+      const beansX = Math.round(viewWidth * 0.68);
+      g.fillStyle(0x061a2d, 0.62); g.fillRoundedRect(left, top, panelWidth, 72, 12);
+      g.lineStyle(1, 0xb3d4ed, 0.28); g.strokeRoundedRect(left, top, panelWidth, 72, 12);
+      ensureText('scoreLabel', 17, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 1 }).setText('SCORE');
+      ensureText('scoreText', 17, 98, { ...valueStyle, fontSize: '20px' }).setText(String(this.score).padStart(5, '0'));
+      ensureText('timerLabel', timerX, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 1 }).setText('TIME');
+      const timerText = ensureText('timerText', timerX, 98, { ...valueStyle, fontSize: '20px' });
+      timerText.setText(`${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
+      timerText.setColor(this.timeLeft <= 15 ? '#ff707c' : '#ffffff');
+      ensureText('coinsLabel', beansX, 84, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('BEANS');
+      const collected = this.coins.filter(coin => coin.taken).length;
+      ensureText('coinsText', beansX, 98, { ...valueStyle, fontSize: '18px' }).setText(`${collected}/${this.coins.length}`);
+      ensureText('livesLabel', 17, 132, { ...labelStyle, fontSize: '8px', letterSpacing: 0.8 }).setText('LIVES');
+      for (let i = 0; i < 4; i++) {
+        const x = 67 + i * 14, y = 137;
+        g.fillStyle(i < this.lives ? 0xff4e6d : 0x485b78, 1);
+        g.fillCircle(x - 3, y - 2, 4); g.fillCircle(x + 3, y - 2, 4); g.fillTriangle(x - 7, y, x + 7, y, x, y + 8);
+      }
+      ensureText('livesCount', 128, 130, { ...labelStyle, fontSize: '9px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives}/4`);
+      ensureText('routeLabel', Math.max(205, viewWidth - 91), 130, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LEVEL');
+      ensureText('routeValue', Math.max(248, viewWidth - 54), 128, { ...valueStyle, fontSize: '12px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
+    } else {
 
     // Score
     g.fillStyle(0xe7b858, 1); g.fillCircle(67, 65, 19);
@@ -1786,10 +1837,11 @@ class HeistScene extends Phaser.Scene {
     ensureText('routeValue', 1108 + extraWidth, 59, { ...valueStyle, fontSize: '17px', color: '#fff1b2' }).setText(LEVEL_NAMES[Math.max(0, this.levelIndex)]);
     g.fillStyle(0x10252a, 0.72); g.fillRoundedRect(1261 + extraWidth, 62, 130, 5, 3);
     g.fillStyle(0x75d7bd, 1); g.fillRoundedRect(1261 + extraWidth, 62, 130 * Phaser.Math.Clamp(this.player.x / this.courseWidth, 0, 1), 8, 4);
+    }
 
     // Individual gadget controls use the same refined language as pause and settings.
     const compactHud = viewWidth < 1100;
-    const powerupXs = compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
+    const powerupXs = compactTouchHud ? [34, 96, 34, 96] : compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
     const powerups = [
       { x: powerupXs[0], title: 'SPEED', color: 0xffcf22, status: this.speedTimer > 0 ? `${Math.ceil(this.speedTimer)}s` : 'READY' },
       { x: powerupXs[1], title: 'CLOAK', color: 0x88e9ff, status: this.invisibilityTimer > 0 ? `${Math.ceil(this.invisibilityTimer)}s` : 'READY' },
@@ -1802,8 +1854,10 @@ class HeistScene extends Phaser.Scene {
       const pulse = (Math.sin(this.animTime * (activePowerup ? 8 : 3) + i * 1.4) + 1) / 2;
       const iconScale = 1 + pulse * (activePowerup ? 0.075 : 0.025);
       const hovered = this.gadgetHover[i];
-      const cardWidth = compactHud ? 112 : 132, cardHeight = 86, controlX = power.x;
-      const cardTop = cardY + 2;
+      const cardWidth = compactTouchHud ? 54 : compactHud ? 112 : 132;
+      const cardHeight = compactTouchHud ? 48 : 86;
+      const controlX = power.x;
+      const cardTop = compactTouchHud ? viewHeight - 178 + (i >= 2 ? 52 : 0) : cardY + 2;
       this.powerupZones[i]?.setPosition(controlX, cardTop + cardHeight / 2).setSize(cardWidth + 8, cardHeight + 12);
       const cardLit = activePowerup || hovered;
       g.fillStyle(0x041a3d, hovered ? 0.84 : 0.72); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
@@ -1811,23 +1865,30 @@ class HeistScene extends Phaser.Scene {
       g.fillStyle(0xffffff, cardLit ? 0.16 : 0.1); g.fillRoundedRect(controlX - cardWidth / 2 + 5, cardTop + 4, cardWidth - 10, 7, 4);
       g.lineStyle(cardLit ? 2.2 : 1.7, cardLit ? power.color : 0xe0bd66, cardLit ? (hovered ? 1 : 0.86 + pulse * 0.14) : 0.8);
       g.strokeRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
-      g.lineStyle(1, 0xffffff, hovered ? 0.3 : 0.18); g.lineBetween(controlX - 34, cardTop + 5, controlX + 34, cardTop + 5);
-      g.fillStyle(power.color, activePowerup ? 0.94 : 0.58); g.fillRoundedRect(controlX - 42, cardTop + cardHeight - 4, 84, 2.5, 2);
+      if (!compactTouchHud) {
+        g.lineStyle(1, 0xffffff, hovered ? 0.3 : 0.18); g.lineBetween(controlX - 34, cardTop + 5, controlX + 34, cardTop + 5);
+        g.fillStyle(power.color, activePowerup ? 0.94 : 0.58); g.fillRoundedRect(controlX - 42, cardTop + cardHeight - 4, 84, 2.5, 2);
+      }
       this.powerupSprites[i]
-        .setPosition(controlX - 32, cardTop + 37 + Math.sin(this.animTime * 3 + i) * 1.5)
-        .setDisplaySize(39 * iconScale, 39 * iconScale)
+        .setPosition(compactTouchHud ? controlX : controlX - 32, cardTop + (compactTouchHud ? 22 : 37) + Math.sin(this.animTime * 3 + i) * 1.5)
+        .setDisplaySize((compactTouchHud ? 27 : 39) * iconScale, (compactTouchHud ? 27 : 39) * iconScale)
         .setDepth(9)
         .setVisible(true)
         .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
-      g.fillStyle(power.color, activePowerup ? 0.95 : 0.55); g.fillCircle(controlX - 32, cardTop + 67, 2.3);
-      g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 43, cardTop + 64, 12);
-      g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 43, cardTop + 64, 12);
+      if (compactTouchHud) {
+        g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 18, cardTop + 32, 9);
+        g.lineStyle(1.5, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 18, cardTop + 32, 9);
+      } else {
+        g.fillStyle(power.color, activePowerup ? 0.95 : 0.55); g.fillCircle(controlX - 32, cardTop + 67, 2.3);
+        g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 43, cardTop + 64, 12);
+        g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 43, cardTop + 64, 12);
+      }
       if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x - 7, cardY + 24, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.05, stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 24).setText(power.title);
+      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 24).setText(power.title).setVisible(!compactTouchHud);
       if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x - 7, cardY + 43, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 43).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff');
+      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 43).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff').setVisible(!compactTouchHud);
       if (!(this as any).powerupKeys) (this as any).powerupKeys = powerups.map((_, key) => this.add.text(powerups[key].x + 43, cardY + 66, String(key + 1), { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff4d6', stroke: '#06121b', strokeThickness: 2 }).setOrigin(0.5).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(controlX + 43, cardY + 66);
+      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(compactTouchHud ? controlX + 18 : controlX + 43, compactTouchHud ? cardTop + 32 : cardY + 66).setVisible(true);
     }
 
     const endState = this.state === 'won' || this.state === 'lost';
@@ -1909,7 +1970,6 @@ new Phaser.Game({
   parent: 'game',
   width: window.innerWidth,
   height: window.innerHeight,
-  resolution: Math.min(window.devicePixelRatio || 1, 1.5),
   backgroundColor: '#102744',
   transparent: true,
   scale: { mode: Phaser.Scale.RESIZE },
