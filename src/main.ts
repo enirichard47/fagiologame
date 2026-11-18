@@ -1,0 +1,1918 @@
+import Phaser from 'phaser';
+import './style.css';
+
+const W = 1664;
+const H = 934;
+const FLOOR = 768;
+const RUN_TIME_SECONDS = 60;
+const LEVEL_NAMES = ['OUTER GARDENS', 'INNER RAMPARTS', 'ROYAL KEEP'] as const;
+const LEVEL_BACKGROUNDS = [
+  '/assets/level-background-generated.png',
+  '/assets/level-2-background.webp',
+  '/assets/level-3-background.webp',
+] as const;
+const LEVEL_STARTS = [0, 0, 0] as const;
+const LEVEL_ENDS = [5000, 5000, 5000] as const;
+const LEVEL_PLATFORM_Y_OFFSETS = [
+  [0, -12, 20, -5, 0, -30, 10, 0, 16, -10, 0, 10, -10, 0],
+  [0, -45, -28, -5, 0, -30, -25, 0, -38, -18, 0, -45, -25, 0],
+  [0, 10, -15, 20, 0, 10, -20, 0, 12, -12, 0, 8, -12, 0],
+] as const;
+const LEVEL_PLATFORM_X_OFFSETS = [
+  [0, -30, 30, -25, 0, 40, -35, 0, 25, -30, 0, -35, 30, 0],
+  [0, 55, -45, 50, 0, -60, 50, 0, 50, -45, 0, -55, 55, 0],
+  [0, -50, 50, -55, 0, 55, -50, 0, -50, 55, 0, 50, -55, 0],
+] as const;
+const LEVEL_PLATFORM_WIDTH_OFFSETS = [
+  [0, -35, 30, -20, 0, 40, -35, 0, 35, -30, 0, 35, -30, 0],
+  [0, -20, 50, -45, 0, 60, -25, 0, -35, 50, 0, -40, 40, 0],
+  [0, 40, -30, 30, 0, -25, 55, 0, -40, 45, 0, -30, 30, 0],
+] as const;
+const LEVEL_GUARD_X_OFFSETS = [
+  [0, 0, 0, 0, 0, 0],
+  [35, -45, 55, -35, 45, -60],
+  [-45, 55, -50, 60, -40, 70],
+] as const;
+const LEVEL_SPIKE_X_OFFSETS = [
+  [0, 0, 0, 0],
+  [45, -55, 50, -45],
+  [-50, 55, -45, 60],
+] as const;
+const LEVEL_LASER_X_OFFSETS = [[0, 0, 0], [80, -50, 110], [-30, 95, -105]] as const;
+const LEVEL_CRATE_X_OFFSETS = [[0, 0, 0, 0], [80, -25, -50, 70], [-60, 25, 50, -80]] as const;
+const LEVEL_BARREL_X_OFFSETS = [0, 90, -95] as const;
+const LASER_POST_Y = FLOOR;
+const LASER_POST_BASE = 413 / 448;
+const LASER_EMITTER_SOURCE = { x: 350, y: 104 };
+// The emitter aperture sits toward the level center in the post artwork.
+const LASER_EMITTER_X_OFFSET = (LASER_EMITTER_SOURCE.x - 256) * 62 / 512;
+const LASER_Y = LASER_POST_Y + (LASER_EMITTER_SOURCE.y / 448 - LASER_POST_BASE) * 48;
+const platforms = [
+  { x: 0, y: FLOOR, w: 585, h: 166 },
+  { x: 550, y: 660, w: 230, h: 72 },
+  { x: 790, y: 560, w: 220, h: 172 },
+  { x: 1025, y: 660, w: 250, h: 72 },
+  { x: 1270, y: FLOOR, w: 500, h: 166 },
+  { x: 1765, y: 660, w: 225, h: 72 },
+  { x: 1995, y: 555, w: 225, h: 177 },
+  { x: 2225, y: FLOOR, w: 420, h: 166 },
+  { x: 2635, y: 650, w: 250, h: 82 },
+  { x: 2890, y: 545, w: 230, h: 187 },
+  { x: 3125, y: FLOOR, w: 430, h: 166 },
+  { x: 3545, y: 655, w: 250, h: 77 },
+  { x: 3798, y: 550, w: 235, h: 182 },
+  { x: 4035, y: FLOOR, w: 965, h: 166 },
+];
+
+type GuardMode = 'patrol' | 'alert' | 'chase' | 'search' | 'stunned';
+type GuardAgent = { x: number; y: number; minX: number; maxX: number; spawnX: number; spawnY: number; spawnDirection: number; spriteHeight: number; direction: number; velocity: number; mode: GuardMode; timer: number; lastSeenX: number; anim: number; gait: number; turning: boolean };
+type BeanCoin = { x: number; y: number; taken: boolean; locked?: boolean; crateIndex?: number };
+type WoodenCrate = { x: number; surfaceY: number; width: number; height: number; broken: boolean };
+type SpikeHazard = { x: number; surfaceY: number; phaseOffset: number };
+type LaserGate = { leftPostX: number; rightPostX: number; phaseOffset: number };
+
+class HeistScene extends Phaser.Scene {
+  private platformSprites: Phaser.GameObjects.Image[] = [];
+  private activePlatforms: (typeof platforms[number])[] = [];
+  private activePlatformIndices: number[] = [];
+  private readonly sourcePlatforms = platforms.map(platform => ({ ...platform }));
+  private courseWidth = LEVEL_ENDS[0] - LEVEL_STARTS[0];
+  private activeCoinCount = 0;
+  private raidBonusTarget = 0;
+  private raidBonusAwarded = false;
+  private landingSquash = 0;
+  private art!: Phaser.GameObjects.Graphics;
+  private guardLightArt!: Phaser.GameObjects.Graphics;
+  private worldStaticArt!: Phaser.GameObjects.Graphics;
+  private hud!: Phaser.GameObjects.Graphics;
+  private modalArt!: Phaser.GameObjects.Graphics;
+  private player = { x: 300, y: 690, vx: 0, vy: 0, grounded: false };
+  private coins: BeanCoin[] = [
+    { x: 368, y: 678, taken: false }, { x: 451, y: 640, taken: false },
+    { x: 640, y: 523, taken: false }, { x: 754, y: 505, taken: false },
+    { x: 888, y: 510, taken: false }, { x: 1067, y: 620, taken: false },
+    { x: 1420, y: 690, taken: false }, { x: 1580, y: 675, taken: false },
+    { x: 1810, y: 620, taken: false }, { x: 2050, y: 515, taken: false },
+    { x: 2350, y: 690, taken: false }, { x: 2700, y: 610, taken: false },
+    { x: 2950, y: 510, taken: false }, { x: 3260, y: 690, taken: false },
+    { x: 3620, y: 615, taken: false }, { x: 3850, y: 515, taken: false },
+    { x: 4300, y: 690, taken: false }, { x: 4580, y: 685, taken: false },
+    { x: 242.5, y: FLOOR - 104, taken: false, locked: true, crateIndex: 0 },
+    { x: 868.5, y: 560 - 95, taken: false, locked: true, crateIndex: 1 },
+    { x: 1360, y: FLOOR - 104, taken: false, locked: true, crateIndex: 2 },
+    { x: 3420, y: FLOOR - 104, taken: false, locked: true, crateIndex: 3 },
+  ];
+  private readonly sourceCoins = this.coins.map(coin => ({ ...coin }));
+  private crates: WoodenCrate[] = [
+    { x: 242.5, surfaceY: FLOOR, width: 75, height: 74, broken: false },
+    { x: 868.5, surfaceY: 560, width: 67, height: 67, broken: false },
+    { x: 1360, surfaceY: FLOOR, width: 75, height: 74, broken: false },
+    { x: 3420, surfaceY: FLOOR, width: 75, height: 74, broken: false },
+  ];
+  private readonly sourceCrates = this.crates.map(crate => ({ ...crate }));
+  private barrel = { x: 1540, surfaceY: FLOOR, width: 84, height: 112 };
+  private readonly sourceBarrel = { ...this.barrel };
+  private spikeHazards: SpikeHazard[] = [
+    { x: 411, surfaceY: FLOOR, phaseOffset: 3.0 },
+    { x: 1865, surfaceY: 660, phaseOffset: 1.15 },
+    { x: 2760, surfaceY: 650, phaseOffset: 2.3 },
+    { x: 3650, surfaceY: 655, phaseOffset: 0.65 },
+  ];
+  private readonly sourceSpikeHazards = this.spikeHazards.map(hazard => ({ ...hazard }));
+  private laserGates: LaserGate[] = [
+    { leftPostX: 2275, rightPostX: 2415, phaseOffset: 0 },
+    { leftPostX: 3220, rightPostX: 3360, phaseOffset: 1.4 },
+    { leftPostX: 4380, rightPostX: 4520, phaseOffset: 2.8 },
+  ];
+  private readonly sourceLaserGates = this.laserGates.map(gate => ({ ...gate }));
+  private keys!: { left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key; jump: Phaser.Input.Keyboard.Key; a: Phaser.Input.Keyboard.Key; d: Phaser.Input.Keyboard.Key; w: Phaser.Input.Keyboard.Key; space: Phaser.Input.Keyboard.Key };
+  private titleImage?: Phaser.GameObjects.Image;
+  private titleLayer?: Phaser.GameObjects.Container;
+  private titleBean?: Phaser.GameObjects.Image;
+  private titleStartZone?: Phaser.GameObjects.Zone;
+  private modalButtonZone?: Phaser.GameObjects.Zone;
+  private backgroundArt: Phaser.GameObjects.Image[] = [];
+  private heroSprite!: Phaser.GameObjects.Image;
+  private levelBanner!: Phaser.GameObjects.Text;
+  private levelIndex = 0;
+  private unlockedLevel = 0;
+  private levelMenu?: HTMLDivElement;
+  private landingMenu?: HTMLDivElement;
+  private gameTopControls?: HTMLDivElement;
+  private touchControlMenu?: HTMLDivElement;
+  private settingsMenu?: HTMLDivElement;
+  private pauseMenu?: HTMLDivElement;
+  private preloader?: HTMLDivElement;
+  private viewOffsetX = 0;
+  private viewOffsetY = 0;
+  private spikeSprites: Phaser.GameObjects.Image[] = [];
+  private worldPropSprites: Phaser.GameObjects.Image[] = [];
+  private chestSprites: Phaser.GameObjects.Image[] = [];
+  private laserPostSprites: Phaser.GameObjects.Image[][] = [];
+  private powerupSprites: Phaser.GameObjects.Image[] = [];
+  private guardSprites: Phaser.GameObjects.Image[] = [];
+  private guards: GuardAgent[] = [
+    { x: 1140, y: 629, spawnX: 1140, spawnY: 629, spawnDirection: 1, spriteHeight: 120, minX: 1045, maxX: 1245, direction: 1, velocity: 76, mode: 'patrol', timer: 0, lastSeenX: 1140, anim: 0, gait: 0, turning: false },
+    { x: 900, y: 532, spawnX: 900, spawnY: 532, spawnDirection: -1, spriteHeight: 108, minX: 820, maxX: 980, direction: -1, velocity: -76, mode: 'patrol', timer: 0, lastSeenX: 900, anim: 0, gait: 0, turning: false },
+    { x: 2100, y: 527, spawnX: 2100, spawnY: 527, spawnDirection: -1, spriteHeight: 108, minX: 2010, maxX: 2205, direction: -1, velocity: -76, mode: 'patrol', timer: 0, lastSeenX: 2100, anim: 0, gait: 0, turning: false },
+    { x: 3000, y: 517, spawnX: 3000, spawnY: 517, spawnDirection: 1, spriteHeight: 108, minX: 2910, maxX: 3100, direction: 1, velocity: 76, mode: 'patrol', timer: 0, lastSeenX: 3000, anim: 0, gait: 0, turning: false },
+    { x: 3900, y: 522, spawnX: 3900, spawnY: 522, spawnDirection: -1, spriteHeight: 108, minX: 3815, maxX: 4015, direction: -1, velocity: -76, mode: 'patrol', timer: 0, lastSeenX: 3900, anim: 0, gait: 0, turning: false },
+    { x: 4650, y: 737, spawnX: 4650, spawnY: 737, spawnDirection: 1, spriteHeight: 120, minX: 4580, maxX: 4760, direction: 1, velocity: 76, mode: 'patrol', timer: 0, lastSeenX: 4650, anim: 0, gait: 0, turning: false },
+  ];
+  private readonly sourceGuards = this.guards.map(guard => ({ ...guard }));
+  private signText!: Phaser.GameObjects.Text;
+  private coinSprites: Phaser.GameObjects.Image[] = [];
+  private powerupZones: Phaser.GameObjects.Zone[] = [];
+  private speedTimer = 0;
+  private invisibilityTimer = 0;
+  private magnetTimer = 0;
+  private extraLifeAvailable = true;
+  private settingsOpen = false;
+  private touchLeft = false;
+  private touchRight = false;
+  private touchJumpPressed = false;
+  private touchJumpHeld = false;
+  private gadgetHover = [false, false, false, false];
+  private touchControlsVisible = false;
+  private state: 'title' | 'playing' | 'paused' | 'won' | 'lost' = 'title';
+  private score = 0;
+  private lives = 3;
+  private timeLeft = RUN_TIME_SECONDS;
+  private elapsed = 0;
+  private hurtTimer = 0;
+  private faceRight = true;
+  private animTime = 0;
+  private heroGait = 0;
+  private jumpAnticipationTimer = 0;
+  private jumpBufferTimer = 0;
+  private coyoteTimer = 0;
+  private autoLeapForward = false;
+  private checkpointX = 100;
+  private checkpointY = FLOOR - 34;
+  private nextCheckpointIndex = 0;
+  private checkpoints = [1668, 2500, 3336, 4180];
+  private readonly sourceCheckpoints = [...this.checkpoints];
+  private landingTimer = 0;
+  private runStepMark = 0;
+  private chestOpened = false;
+  private chestAnimTimer = 0;
+  private soundEnabled = true;
+  private musicEnabled = true;
+  private screenShakeEnabled = true;
+  private audioContext?: AudioContext;
+  private sfxBus?: GainNode;
+  private musicBus?: GainNode;
+  private musicTimer?: number;
+  private musicStep = 0;
+  private hudRefreshTimer = 0;
+  private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
+
+  constructor() { super('Heist'); }
+
+  preload() {
+    this.load.image('title-splash', '/assets/fagiolo-title-art.png');
+    this.load.image('loader-world', '/assets/fagiolo-loader-world.png');
+    const mount = document.getElementById('game');
+    if (mount) {
+      this.preloader = document.createElement('div');
+      this.preloader.className = 'game-preloader';
+      this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="loader-route"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
+      mount.append(this.preloader);
+      const loaderStartedAt = performance.now();
+      const fill = this.preloader.querySelector('.loader-track i') as HTMLElement;
+      const percent = this.preloader.querySelector('.loader-percent') as HTMLElement;
+      const runner = this.preloader.querySelector('.loader-bean') as HTMLImageElement;
+      const runnerFrames = Array.from({ length: 6 }, (_, frame) => `/assets/bean-walk-${frame}-aligned.png`);
+      const jumpFrames = Array.from({ length: 4 }, (_, frame) => `/assets/bean-jump-${frame}-aligned.png`);
+      let frameIndex = 0;
+      let jumping = false;
+      let loadReady = false;
+      let sceneFinished = false;
+      let dismissed = false;
+      const sceneDuration = 5800;
+      const finishIfReady = () => {
+        if (!loadReady || !sceneFinished || dismissed) return;
+        dismissed = true;
+        this.preloader?.classList.add('is-done');
+        window.setTimeout(() => {
+          window.clearInterval(runnerAnimation);
+          this.preloader?.remove();
+        }, 650);
+      };
+      const animateRunner = () => {
+        if (jumping) return;
+        frameIndex = (frameIndex + 1) % runnerFrames.length;
+        runner.src = runnerFrames[frameIndex];
+      };
+      const runnerAnimation = window.setInterval(animateRunner, 290);
+      let jumpPlayed = false;
+      let jumpFrame = 0;
+      let jumpFrameTimer = 0;
+      const animateLoading = (now: number) => {
+        const elapsed = Math.min(sceneDuration, now - loaderStartedAt);
+        let progress: number;
+        if (elapsed < 2400) progress = 0.42 * elapsed / 2400;
+        else if (elapsed < 3000) progress = 0.42 + 0.16 * (elapsed - 2400) / 600;
+        else progress = 0.58 + 0.42 * (elapsed - 3000) / (sceneDuration - 3000);
+
+        if (!jumpPlayed && elapsed >= 2400) {
+          jumpPlayed = true;
+          jumping = true;
+          runner.classList.add('is-jumping');
+          jumpFrame = 0;
+          runner.src = jumpFrames[0];
+          jumpFrameTimer = window.setInterval(() => {
+            jumpFrame = Math.min(jumpFrames.length - 1, jumpFrame + 1);
+            runner.src = jumpFrames[jumpFrame];
+          }, 135);
+          window.setTimeout(() => {
+            window.clearInterval(jumpFrameTimer);
+            jumping = false;
+            runner.classList.remove('is-jumping');
+            runner.src = runnerFrames[frameIndex];
+          }, 600);
+        }
+
+        const percentValue = Math.round(progress * 100);
+        fill.style.width = `${percentValue}%`;
+        percent.textContent = `${percentValue}%`;
+        runner.style.left = `calc(${percentValue}% - 120px)`;
+        if (elapsed >= sceneDuration) {
+          sceneFinished = true;
+          finishIfReady();
+        } else window.requestAnimationFrame(animateLoading);
+      };
+      window.requestAnimationFrame(animateLoading);
+      this.load.once('complete', () => {
+        loadReady = true;
+        finishIfReady();
+      });
+    }
+    this.load.image('level-background', '/assets/level-background-generated.png');
+    this.load.image('level-2-background', '/assets/level-2-background.webp');
+    this.load.image('level-3-background', '/assets/level-3-background.webp');
+    for (let frame = 0; frame < 3; frame++) {
+      this.load.image(`bean-idle-${frame}`, `/assets/bean-idle-${frame}-aligned.png`);
+    }
+    for (let frame = 0; frame < 6; frame++) {
+      this.load.image(`bean-walk-${frame}`, `/assets/bean-walk-${frame}-aligned.png`);
+    }
+    for (let frame = 0; frame < 4; frame++) {
+      this.load.image(`bean-jump-${frame}`, `/assets/bean-jump-${frame}-aligned.png`);
+    }
+    this.load.image('bean-coin', '/assets/bean-coin-optimized.png');
+    this.load.image('prop-spikes', '/assets/prop-spikes.png');
+    this.load.image('prop-laser-post', '/assets/prop-laser-post.png');
+    this.load.image('prop-crate', '/assets/prop-crate.png');
+    this.load.image('prop-barrel', '/assets/prop-barrel.png');
+    for (let frame = 0; frame < 4; frame++) {
+      this.load.image(`prop-chest-${frame}`, `/assets/prop-chest-${frame}.png`);
+    }
+    this.load.image('power-speed', '/assets/power-speed.png');
+    this.load.image('power-cloak', '/assets/power-cloak.png');
+    this.load.image('power-magnet', '/assets/power-magnet.png');
+    this.load.image('power-life', '/assets/power-life.png');
+    this.load.image('guard-idle', '/assets/guard-idle-aligned.png');
+    for (let frame = 0; frame < 6; frame++) {
+      this.load.image(`guard-walk-${frame}`, `/assets/guard-walk-${frame}-aligned.png`);
+    }
+    this.load.image('guard-stunned', '/assets/guard-stunned-aligned.png');
+  }
+
+  create() {
+    this.unlockedLevel = Math.max(0, Math.min(2, Number(localStorage.getItem('fagiolo-unlocked-level') || 0)));
+    this.soundEnabled = localStorage.getItem('fagiolo-sound-enabled') !== 'false';
+    this.musicEnabled = localStorage.getItem('fagiolo-music-enabled') !== 'false';
+    this.screenShakeEnabled = localStorage.getItem('fagiolo-screen-shake') !== 'false';
+    this.touchControlsVisible = this.sys.game.device.input.touch;
+    this.cursors = this.input.keyboard?.createCursorKeys();
+    this.keys = {
+      left: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
+      right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT),
+      jump: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.UP),
+      a: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
+      d: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+      w: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
+      space: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
+    };
+    this.keys = Object.assign(this.keys, {
+      power1: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ONE),
+      power2: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TWO),
+      power3: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
+      power4: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
+    });
+    this.titleImage = this.add.image(W / 2, H / 2, 'level-background').setDisplaySize(W, H).setScrollFactor(0).setDepth(-3).setVisible(false);
+    this.titleLayer = this.add.container(0, 0).setScrollFactor(0).setDepth(6);
+    const shade = this.add.rectangle(W / 2, H / 2, W, H, 0x081522, 0.38);
+    const titleArt = this.add.graphics();
+    titleArt.fillStyle(0x071521, 0.92); titleArt.fillRoundedRect(138, 155, 790, 620, 34);
+    titleArt.lineStyle(2, 0xd3ad60, 0.88); titleArt.strokeRoundedRect(138, 155, 790, 620, 34);
+    titleArt.fillStyle(0xdab45f, 1); titleArt.fillRoundedRect(185, 199, 8, 532, 4);
+    titleArt.fillStyle(0x315a50, 0.88); titleArt.fillRoundedRect(216, 472, 654, 66, 16);
+    titleArt.lineStyle(1, 0xa5c6a3, 0.45); titleArt.strokeRoundedRect(216, 472, 654, 66, 16);
+    titleArt.fillStyle(0x397a68, 1); titleArt.fillRoundedRect(216, 589, 654, 102, 22);
+    titleArt.lineStyle(2, 0xc9e4bf, 0.9); titleArt.strokeRoundedRect(216, 589, 654, 102, 22);
+    titleArt.fillStyle(0xd9b65e, 1); titleArt.fillRoundedRect(239, 610, 5, 60, 3);
+    const menuEyebrow = this.add.text(240, 222, 'A CASTLE HEIST PLATFORM ADVENTURE', {
+      fontFamily: 'Arial', fontSize: '14px', fontStyle: 'bold', color: '#d8bb76', letterSpacing: 2.2,
+    });
+    const menuTitle = this.add.text(232, 265, 'FAGIOLO\nHEIST', {
+      fontFamily: 'Arial Black, Arial, sans-serif', fontSize: '78px', fontStyle: 'bold', lineSpacing: -8,
+      color: '#fff4d4', stroke: '#132b25', strokeThickness: 9,
+      shadow: { color: '#081017', blur: 14, fill: true, offsetX: 3, offsetY: 6 },
+    });
+    const menuTagline = this.add.text(242, 446, 'THE GREAT BEAN ESCAPE', {
+      fontFamily: 'Arial', fontSize: '21px', fontStyle: 'bold', color: '#e6d4aa', letterSpacing: 1.4,
+    });
+    const mission = this.add.text(244, 491, 'CROSS THREE CASTLE ZONES. BEANS BOOST YOUR SCORE.\nREACH THE FINAL CHEST BEFORE TIME RUNS OUT.', {
+      fontFamily: 'Arial', fontSize: '15px', fontStyle: 'bold', color: '#e4eadb', lineSpacing: 5,
+    });
+    const startLabel = this.add.text(543, 621, 'START HEIST', {
+      fontFamily: 'Arial', fontSize: '28px', fontStyle: 'bold', color: '#fff8e8', letterSpacing: 1.5,
+      shadow: { color: '#183a30', blur: 4, fill: true },
+    }).setOrigin(0.5, 0);
+    const controlHint = this.add.text(242, 713, 'MOVE A/D OR ARROWS   JUMP W/SPACE/UP   GADGETS 1-4   FULLSCREEN F   PAUSE ESC', {
+      fontFamily: 'Arial', fontSize: '13px', fontStyle: 'bold', color: '#bbccc0', letterSpacing: 0.4,
+    });
+    this.titleBean = this.add.image(1200, 618, 'bean-idle-0').setOrigin(0.5, 0.72).setDisplaySize(280, 218);
+    this.titleLayer.add([shade, titleArt, menuEyebrow, menuTitle, menuTagline, mission, startLabel, controlHint, this.titleBean]);
+    this.titleLayer.setVisible(false);
+    const landing = document.createElement('div');
+    landing.className = 'landing-menu is-visible';
+    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span><span class="nav-caption">THE GREAT BEAN ESCAPE</span><span class="nav-chip">A CASTLE ADVENTURE</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> THE GREAT BEAN ESCAPE</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">A quiet castle. A watchful guard. One very determined bean with everything to gain.</p><button class="landing-cta" type="button"><span>ENTER THE CASTLE</span><b>→</b></button><div class="hero-meta"><span>THREE WINGS</span><span>ONE DARING GETAWAY</span></div></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>JUMP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">A LITTLE CUNNING GOES A LONG WAY.</span></footer>`;
+    document.getElementById('game')?.append(landing);
+    this.landingMenu = landing;
+    landing.querySelector('.landing-cta')?.addEventListener('click', () => {
+      this.playGameSound('start');
+      this.startBackgroundMusic();
+      this.showLevelSelect();
+    });
+    const levelMenu = document.createElement('div');
+    levelMenu.className = 'level-menu';
+    levelMenu.innerHTML = `<section class="level-panel"><header class="level-heading"><div><p class="level-kicker">THE CASTLE · THREE WINGS</p><h1>Choose your route</h1><p class="level-intro">Each wing has its own watch, its own hazards, and a way through.</p></div><span class="level-seal"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span></header><div class="level-cards"></div><footer class="level-panel-footer"><span>COMPLETE A WING TO OPEN THE NEXT</span><button class="level-back" type="button">RETURN TO TITLE</button></footer></section>`;
+    document.getElementById('game')?.append(levelMenu);
+    this.levelMenu = levelMenu;
+    const cards = levelMenu.querySelector('.level-cards') as HTMLDivElement;
+    LEVEL_NAMES.forEach((name, index) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'level-card';
+      card.innerHTML = `<span class="level-number">0${index + 1}</span><span class="level-name">${name}</span><span class="level-status">${index === 0 ? 'READY TO PLAY' : 'LOCKED'}</span>`;
+      card.disabled = index > this.unlockedLevel;
+      card.addEventListener('click', () => this.startGame(index));
+      cards.append(card);
+    });
+    levelMenu.querySelector('.level-back')?.addEventListener('click', () => {
+      this.returnToTitle();
+    });
+    this.createGameOverlays();
+    this.backgroundArt = [this.add.image(W / 2, H / 2, 'level-background')
+      .setScrollFactor(0).setDepth(-10).setVisible(false)];
+    for (let level = 0; level < LEVEL_NAMES.length; level++) {
+      for (const [index, platform] of platforms.entries()) {
+        const variantWidth = platform.w + (LEVEL_PLATFORM_WIDTH_OFFSETS[level][index] ?? 0);
+        const textureKey = `stone-platform-${level}-${index}`;
+        const painter = this.add.graphics();
+        this.drawStonePlatform(painter, { ...platform, x: 4, y: 1, w: variantWidth }, index + level * 5);
+        painter.generateTexture(textureKey, variantWidth + 8, platform.h + 15);
+        painter.destroy();
+        if (level === 0) {
+          this.platformSprites.push(this.add.image(platform.x - 4, platform.y - 1, textureKey).setOrigin(0).setDepth(1).setVisible(false));
+        }
+      }
+    }
+    this.worldStaticArt = this.add.graphics().setDepth(2.8).setVisible(false);
+    this.art = this.add.graphics().setDepth(3).setVisible(false);
+    this.guardLightArt = this.add.graphics().setDepth(4).setVisible(false);
+    this.hud = this.add.graphics().setDepth(8).setScrollFactor(0).setVisible(false);
+    this.modalArt = this.add.graphics().setDepth(12).setScrollFactor(0).setVisible(false);
+    this.heroSprite = this.add.image(this.player.x, this.player.y, 'bean-idle-0').setOrigin(0.5, 0.72).setDisplaySize(165, 128).setDepth(6).setVisible(false);
+    this.spikeSprites = this.spikeHazards.map(hazard => this.add.image(hazard.x, hazard.surfaceY, 'prop-spikes').setOrigin(0.5, 314 / 448).setDisplaySize(148, 130).setDepth(1.2).setVisible(false));
+    this.worldPropSprites = [
+      ...this.crates.map(crate => this.add.image(crate.x, crate.surfaceY, 'prop-crate')
+        .setOrigin(0.5, 413 / 448)
+        .setDisplaySize(crate.width * 1.36, crate.height * 1.19)
+        .setDepth(2)
+        .setVisible(false)),
+      this.add.image(this.barrel.x, this.barrel.surfaceY, 'prop-barrel').setOrigin(0.5, 413 / 448).setDisplaySize(124, 132).setDepth(2).setVisible(false),
+    ];
+    this.chestSprites = [
+      this.add.image(1038, 660, 'prop-chest-0').setOrigin(0.5, 420 / 448).setDisplaySize(146, 109).setDepth(1).setVisible(false),
+      this.add.image(4810, FLOOR, 'prop-chest-0').setOrigin(0.5, 420 / 448).setDisplaySize(146, 109).setDepth(1).setVisible(false),
+    ];
+    this.laserPostSprites = this.laserGates.map(gate => [
+      this.add.image(gate.leftPostX, LASER_POST_Y, 'prop-laser-post').setOrigin(0.5, LASER_POST_BASE).setDisplaySize(62, 48).setDepth(1.5).setVisible(false),
+      this.add.image(gate.rightPostX, LASER_POST_Y, 'prop-laser-post').setOrigin(0.5, LASER_POST_BASE).setDisplaySize(62, 48).setFlipX(true).setDepth(1.5).setVisible(false),
+    ]);
+    this.powerupSprites = ['power-speed', 'power-cloak', 'power-magnet', 'power-life'].map(key =>
+      this.add.image(0, 0, key).setDisplaySize(44, 44).setDepth(5).setScrollFactor(0).setVisible(false),
+    );
+    this.guardSprites = this.guards.map(guard => this.add.image(guard.x, guard.y, 'guard-idle')
+      .setOrigin(0.5, 0.72)
+      .setDisplaySize(guard.spriteHeight * 137 / 120, guard.spriteHeight)
+      .setDepth(2)
+      .setVisible(false));
+    this.coinSprites = this.coins.map(c => this.add.image(c.x, c.y, 'bean-coin').setDisplaySize(48, 36).setDepth(2).setVisible(false));
+    this.signText = this.add.text(133, 497, 'MOVE: A/D OR ARROWS\nJUMP: W / SPACE / UP\nBEANS = SCORE\nCHEST = EXIT', { fontFamily: 'Trebuchet MS', fontSize: '15px', fontStyle: 'bold', color: '#20160f', align: 'center', lineSpacing: 4 }).setOrigin(.5).setDepth(4).setVisible(false);
+    this.levelBanner = this.add.text(W / 2, 145, '', {
+      fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '28px', fontStyle: 'bold', color: '#fff2c9',
+      stroke: '#10212c', strokeThickness: 7, shadow: { color: '#07111a', blur: 12, fill: true, offsetY: 3 },
+    }).setOrigin(.5).setDepth(7).setScrollFactor(0).setAlpha(0).setVisible(false);
+    this.powerupZones = [105, 245, 385, 525].map((x, i) => this.add.zone(x, H - 76, 132, 108).setScrollFactor(0).setInteractive()
+      .on('pointerover', () => { this.gadgetHover[i] = true; })
+      .on('pointerout', () => { this.gadgetHover[i] = false; })
+      .on('pointerdown', () => this.activatePowerup(i)));
+    this.titleStartZone = this.add.zone(543, 640, 654, 102).setDepth(7).setScrollFactor(0).setInteractive().on('pointerdown', () => this.showLevelSelect());
+    this.modalButtonZone = this.add.zone(W / 2, H / 2 + 142, 270, 60).setScrollFactor(0).setInteractive().on('pointerdown', () => {
+      if (this.state === 'won') this.showLevelSelect();
+      else if (this.state === 'lost') this.startGame(this.levelIndex);
+    });
+    this.input.on('pointerup', () => { this.touchLeft = false; this.touchRight = false; this.touchJumpHeld = false; });
+    this.input.keyboard?.on('keydown-ENTER', () => this.state === 'title' ? this.showLevelSelect() : this.startGame(this.levelIndex));
+    this.input.keyboard?.on('keydown-R', () => this.startGame(this.levelIndex));
+    this.input.keyboard?.on('keydown-ESC', () => this.settingsOpen ? this.closeSettings(true) : this.togglePause());
+    this.input.keyboard?.on('keydown-F', () => this.toggleFullscreen());
+    this.input.keyboard?.on('keydown-M', () => {
+      this.soundEnabled = !this.soundEnabled;
+      localStorage.setItem('fagiolo-sound-enabled', String(this.soundEnabled));
+      this.syncSettingsMenu();
+      if (this.state === 'paused') this.drawHud(true);
+      if (this.soundEnabled) this.playGameSound('power');
+    });
+    this.scale.on(Phaser.Scale.Events.RESIZE, (gameSize: Phaser.Structs.Size) => this.resizeGameView(gameSize.width, gameSize.height));
+    this.resizeGameView(this.scale.width, this.scale.height);
+  }
+
+  private createGameOverlays() {
+    const mount = document.getElementById('game');
+    if (!mount) return;
+
+    const controls = document.createElement('div');
+    controls.className = 'game-top-controls';
+    controls.innerHTML = `<button class="game-top-button" data-action="pause" aria-label="Pause game"><span class="top-button-icon pause-icon" aria-hidden="true"><i></i><i></i></span><small>PAUSE</small></button><button class="game-top-button" data-action="settings" aria-label="Open settings"><span class="top-button-icon settings-icon" aria-hidden="true">⚙</span><small>SETTINGS</small></button><button class="game-top-button exit-button" data-action="exit" aria-label="Exit to level select"><span class="top-button-icon exit-icon" aria-hidden="true">↪</span><small>EXIT</small></button>`;
+    mount.append(controls);
+    this.gameTopControls = controls;
+    controls.querySelector('[data-action="pause"]')?.addEventListener('click', () => this.togglePause());
+    controls.querySelector('[data-action="settings"]')?.addEventListener('click', () => this.toggleSettings());
+    controls.querySelector('[data-action="exit"]')?.addEventListener('click', () => this.quitToLevelSelect());
+
+    const settings = document.createElement('div');
+    settings.className = 'game-settings-overlay';
+    settings.innerHTML = `<section class="game-settings-panel" role="dialog" aria-modal="true" aria-labelledby="game-settings-title"><header class="game-settings-header"><span class="game-settings-kicker">HEIST PREFERENCES</span><button class="settings-close" type="button" aria-label="Close settings">×</button><h2 id="game-settings-title">Settings</h2><p>Make the escape feel right for you. Changes save automatically.</p></header><div class="settings-options"><div class="settings-option"><span class="settings-option-icon">♫</span><span class="settings-option-copy"><b>Soundtrack</b><small>Original castle heist music</small></span><button class="settings-toggle" type="button" data-setting="0" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">♪</span><span class="settings-option-copy"><b>Sound effects</b><small>Beans, jumps and heist feedback</small></span><button class="settings-toggle" type="button" data-setting="1" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">✦</span><span class="settings-option-copy"><b>Screen shake</b><small>Impact feedback when Fagiolo is hit</small></span><button class="settings-toggle" type="button" data-setting="2" aria-pressed="true">ON</button></div><div class="settings-option"><span class="settings-option-icon">▣</span><span class="settings-option-copy"><b>Display mode</b><small>Switch between windowed and fullscreen</small></span><button class="settings-toggle settings-display-toggle" type="button" data-setting="3" aria-pressed="false">WINDOWED</button></div></div><div class="settings-controls-hint"><span>MOVE <b>A / D</b> or <b>← / →</b></span><span>JUMP <b>SPACE</b></span><span>GADGETS <b>1–4</b></span></div><footer><button class="settings-resume" type="button">BACK TO HEIST <span>↗</span></button></footer></section>`;
+    mount.append(settings);
+    this.settingsMenu = settings;
+    settings.querySelector('.settings-close')?.addEventListener('click', () => this.closeSettings(true));
+    settings.querySelector('.settings-resume')?.addEventListener('click', () => this.closeSettings(true));
+    settings.querySelectorAll<HTMLButtonElement>('.settings-toggle').forEach(button => {
+      button.addEventListener('click', () => this.applySetting(Number(button.dataset.setting)));
+    });
+
+    const pause = document.createElement('div');
+    pause.className = 'game-pause-overlay';
+    pause.innerHTML = `<section class="game-pause-panel" role="dialog" aria-modal="true" aria-labelledby="game-pause-title"><span class="game-pause-kicker">THE HEIST IS ON HOLD</span><h2 id="game-pause-title">Take a breath.</h2><p>Your route is safe. The guards are waiting.</p><button class="pause-resume" type="button">RESUME HEIST <span>▶</span></button><button class="pause-levels" type="button">RETURN TO LEVEL SELECT</button></section></div>`;
+    mount.append(pause);
+    this.pauseMenu = pause;
+    pause.querySelector('.pause-resume')?.addEventListener('click', () => this.togglePause());
+    pause.querySelector('.pause-levels')?.addEventListener('click', () => this.quitToLevelSelect());
+
+    if (this.touchControlsVisible) {
+      const touch = document.createElement('div');
+      touch.className = 'game-touch-controls';
+      touch.innerHTML = `<button type="button" aria-label="Move left" data-touch="left"><span>‹</span><small>LEFT</small></button><button type="button" aria-label="Move right" data-touch="right"><span>›</span><small>RIGHT</small></button><button type="button" aria-label="Jump forward" data-touch="jump"><span>↑</span><small>LEAP</small></button>`;
+      mount.append(touch);
+      this.touchControlMenu = touch;
+      const setTouch = (action: string, active: boolean) => {
+        if (action === 'left') this.touchLeft = active;
+        if (action === 'right') this.touchRight = active;
+        if (action === 'jump') {
+          if (active) this.touchJumpPressed = true;
+          this.touchJumpHeld = active;
+        }
+      };
+      touch.querySelectorAll<HTMLButtonElement>('[data-touch]').forEach(button => {
+        const action = button.dataset.touch!;
+        button.addEventListener('pointerdown', event => {
+          event.preventDefault();
+          button.setPointerCapture(event.pointerId);
+          setTouch(action, true);
+        });
+        const release = (event: PointerEvent) => { event.preventDefault(); setTouch(action, false); };
+        button.addEventListener('pointerup', release);
+        button.addEventListener('pointercancel', release);
+        button.addEventListener('lostpointercapture', () => setTouch(action, false));
+      });
+    }
+    this.syncSettingsMenu();
+  }
+
+  private toggleSettings() {
+    if (this.settingsOpen) { this.closeSettings(true); return; }
+    if (this.state !== 'playing' && this.state !== 'paused') return;
+    this.settingsOpen = true;
+    if (this.state === 'playing') this.state = 'paused';
+    this.pauseMenu?.classList.remove('is-visible');
+    this.settingsMenu?.classList.add('is-visible');
+    this.syncSettingsMenu();
+    this.updateMusicMix();
+    this.drawHud(true);
+  }
+
+  private closeSettings(resume: boolean) {
+    this.settingsOpen = false;
+    this.settingsMenu?.classList.remove('is-visible');
+    if (resume && this.state === 'paused') this.state = 'playing';
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused');
+    this.updateMusicMix();
+    if (this.state === 'playing' || this.state === 'paused') this.drawHud(this.state === 'paused');
+  }
+
+  private applySetting(index: number) {
+    if (index === 0) {
+      this.musicEnabled = !this.musicEnabled;
+      localStorage.setItem('fagiolo-music-enabled', String(this.musicEnabled));
+      if (this.musicEnabled) this.startBackgroundMusic();
+      else this.stopBackgroundMusic();
+    } else if (index === 1) {
+      this.soundEnabled = !this.soundEnabled;
+      localStorage.setItem('fagiolo-sound-enabled', String(this.soundEnabled));
+      if (this.soundEnabled) this.playGameSound('power');
+    } else if (index === 2) {
+      this.screenShakeEnabled = !this.screenShakeEnabled;
+      localStorage.setItem('fagiolo-screen-shake', String(this.screenShakeEnabled));
+    } else if (index === 3) {
+      this.toggleFullscreen();
+    }
+    this.syncSettingsMenu();
+    this.drawHud(true);
+  }
+
+  private syncSettingsMenu() {
+    const values = [this.musicEnabled, this.soundEnabled, this.screenShakeEnabled];
+    this.settingsMenu?.querySelectorAll<HTMLButtonElement>('.settings-toggle').forEach(button => {
+      const index = Number(button.dataset.setting);
+      if (index === 3) {
+        button.textContent = this.scale.isFullscreen ? 'FULLSCREEN' : 'WINDOWED';
+        button.setAttribute('aria-pressed', String(this.scale.isFullscreen));
+      } else {
+        const enabled = values[index];
+        button.textContent = enabled ? 'ON' : 'OFF';
+        button.setAttribute('aria-pressed', String(enabled));
+      }
+    });
+  }
+
+  private quitToLevelSelect() {
+    this.returnToTitle();
+    this.showLevelSelect();
+  }
+
+  private returnToTitle() {
+    this.state = 'title';
+    this.settingsOpen = false;
+    this.levelMenu?.classList.remove('is-visible');
+    this.gameTopControls?.classList.remove('is-visible');
+    this.touchControlMenu?.classList.remove('is-visible');
+    this.pauseMenu?.classList.remove('is-visible');
+    this.settingsMenu?.classList.remove('is-visible');
+    this.landingMenu?.classList.add('is-visible');
+
+    // Gameplay sprites remain in the Phaser scene after a run. Hide them before
+    // showing the title so the transparent landing overlay cannot reveal the level.
+    this.cameras.main.stopFollow();
+    this.cameras.main.setBounds(0, 0, W, H);
+    this.cameras.main.setScroll(0, 0);
+    this.titleStartZone?.setActive(true).setInteractive();
+    this.titleImage?.setActive(false).setVisible(false);
+    this.titleLayer?.setActive(false).setVisible(false);
+    this.tweens.killTweensOf(this.levelBanner);
+    this.levelBanner?.setVisible(false);
+    this.signText?.setVisible(false);
+    this.hud?.setVisible(false);
+    this.worldStaticArt?.setVisible(false);
+    this.art?.setVisible(false);
+    this.guardLightArt?.setVisible(false);
+    this.heroSprite?.setVisible(false);
+    this.platformSprites.forEach(sprite => sprite.setVisible(false));
+    this.guardSprites.forEach(sprite => sprite.setVisible(false));
+    this.spikeSprites.forEach(sprite => sprite.setVisible(false));
+    this.worldPropSprites.forEach(sprite => sprite.setVisible(false));
+    this.chestSprites.forEach(sprite => sprite.setVisible(false));
+    this.laserPostSprites.forEach(pair => pair.forEach(sprite => sprite.setVisible(false)));
+    this.coinSprites.forEach(sprite => sprite.setVisible(false));
+    this.powerupSprites.forEach(sprite => sprite.setVisible(false));
+    this.modalArt?.clear().setVisible(false);
+    for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue', 'modalTitle', 'modalBody', 'modalButtonText']) {
+      ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
+    }
+    for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
+      ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(false));
+    }
+    const gameSurface = document.getElementById('game');
+    if (gameSurface) gameSurface.style.backgroundImage = "url('/assets/fagiolo-landing-art.png')";
+  }
+
+  private toggleFullscreen() {
+    if (this.scale.isFullscreen) this.scale.stopFullscreen();
+    else this.scale.startFullscreen();
+    window.setTimeout(() => this.syncSettingsMenu(), 120);
+  }
+
+  private startBackgroundMusic() {
+    const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass || !this.musicEnabled) return;
+    this.audioContext ??= new AudioContextClass();
+    if (this.audioContext.state === 'suspended') void this.audioContext.resume();
+    if (!this.musicBus) {
+      this.musicBus = this.audioContext.createGain();
+      this.musicBus.connect(this.audioContext.destination);
+    }
+    this.musicBus.gain.setTargetAtTime(0.11, this.audioContext.currentTime, 0.16);
+    if (this.musicTimer !== undefined) return;
+    const melody = [392, 0, 494, 587, 659, 587, 494, 0, 392, 0, 330, 392, 494, 0, 587, 494];
+    const bass = [98, 0, 0, 0, 110, 0, 0, 0, 82, 0, 0, 0, 98, 0, 0, 0];
+    const playNote = (frequency: number, wave: OscillatorType, peak: number, duration: number) => {
+      if (!frequency || !this.audioContext || !this.musicBus) return;
+      const start = this.audioContext.currentTime + 0.012;
+      const oscillator = this.audioContext.createOscillator();
+      const envelope = this.audioContext.createGain();
+      oscillator.type = wave;
+      oscillator.frequency.setValueAtTime(frequency, start);
+      envelope.gain.setValueAtTime(0.0001, start);
+      envelope.gain.exponentialRampToValueAtTime(peak, start + 0.018);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(envelope); envelope.connect(this.musicBus);
+      oscillator.start(start); oscillator.stop(start + duration + 0.02);
+    };
+    this.musicTimer = window.setInterval(() => {
+      if (!this.musicEnabled || !this.audioContext || this.audioContext.state !== 'running') return;
+      const step = this.musicStep++ % melody.length;
+      playNote(melody[step], 'triangle', 0.11, 0.24);
+      if (step % 4 === 0) playNote(bass[step], 'sine', 0.28, 0.48);
+    }, 300);
+  }
+
+  private stopBackgroundMusic() {
+    if (this.musicTimer !== undefined) window.clearInterval(this.musicTimer);
+    this.musicTimer = undefined;
+    if (this.musicBus && this.audioContext) this.musicBus.gain.setTargetAtTime(0.0001, this.audioContext.currentTime, 0.08);
+  }
+
+  private updateMusicMix() {
+    if (!this.musicBus || !this.audioContext) return;
+    const volume = this.state === 'playing' ? 0.11 : 0.075;
+    this.musicBus.gain.setTargetAtTime(this.musicEnabled ? volume : 0.0001, this.audioContext.currentTime, 0.16);
+  }
+
+  private showLevelSelect() {
+    if (this.state === 'playing' || this.state === 'paused') return;
+    this.state = 'title';
+    this.gameTopControls?.classList.remove('is-visible');
+    this.touchControlMenu?.classList.remove('is-visible');
+    this.pauseMenu?.classList.remove('is-visible');
+    this.settingsMenu?.classList.remove('is-visible');
+    this.landingMenu?.classList.remove('is-visible');
+    this.titleImage?.setActive(false).setVisible(false);
+    this.titleLayer?.setActive(false).setVisible(false);
+    this.levelMenu?.classList.add('is-visible');
+    const cards = this.levelMenu?.querySelectorAll<HTMLButtonElement>('.level-card');
+    cards?.forEach((card, index) => {
+      card.disabled = index > this.unlockedLevel;
+      card.querySelector('.level-status')!.textContent = index > this.unlockedLevel ? 'LOCKED' : index < this.unlockedLevel ? 'COMPLETED · REPLAY' : 'READY TO PLAY';
+    });
+  }
+
+  private startGame(level = this.levelIndex) {
+    if (this.state === 'playing' || this.state === 'paused') return;
+    this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+    this.levelMenu?.classList.remove('is-visible');
+    this.landingMenu?.classList.remove('is-visible');
+    this.titleStartZone?.disableInteractive();
+    this.playGameSound('start');
+    // Each level uses the complete course, with its own setting and progress.
+    const sourceStart = LEVEL_STARTS[this.levelIndex];
+    const sourceEnd = LEVEL_ENDS[this.levelIndex];
+    this.courseWidth = sourceEnd - sourceStart;
+    const inCourse = (x: number) => x >= sourceStart && x < sourceEnd;
+    this.activePlatformIndices = [];
+    const platformOffsets = LEVEL_PLATFORM_Y_OFFSETS[this.levelIndex];
+    const platformXOffsets = LEVEL_PLATFORM_X_OFFSETS[this.levelIndex];
+    const platformWidthOffsets = LEVEL_PLATFORM_WIDTH_OFFSETS[this.levelIndex];
+    const crateXOffsets = LEVEL_CRATE_X_OFFSETS[this.levelIndex];
+    const levelGuardOffsets = LEVEL_GUARD_X_OFFSETS[this.levelIndex];
+    const levelSpikeOffsets = LEVEL_SPIKE_X_OFFSETS[this.levelIndex];
+    this.activePlatforms = this.sourcePlatforms.flatMap((platform, index) => {
+      const clippedLeft = Math.max(platform.x, sourceStart);
+      const clippedRight = Math.min(platform.x + platform.w, sourceEnd);
+      if (clippedRight <= clippedLeft) return [];
+      this.activePlatformIndices.push(index);
+      return [{
+        ...platform,
+        x: clippedLeft - sourceStart + (platformXOffsets[index] ?? 0),
+        y: platform.y + (platformOffsets[index] ?? 0),
+        w: clippedRight - clippedLeft + (platformWidthOffsets[index] ?? 0),
+      }];
+    });
+    const sourcePlatformIndexAt = (x: number, referenceY: number) => {
+      let bestIndex = -1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      this.sourcePlatforms.forEach((platform, index) => {
+        if (x < platform.x || x > platform.x + platform.w) return;
+        const distance = Math.abs(platform.y - referenceY);
+        if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
+      });
+      return bestIndex;
+    };
+    const platformShiftAt = (x: number, referenceY: number) => {
+      const platformIndex = sourcePlatformIndexAt(x, referenceY);
+      return platformIndex < 0 ? 0 : platformOffsets[platformIndex] ?? 0;
+    };
+    const platformXShiftAt = (x: number, referenceY: number) => {
+      const platformIndex = sourcePlatformIndexAt(x, referenceY);
+      return platformIndex < 0 ? 0 : platformXOffsets[platformIndex] ?? 0;
+    };
+    this.coins = this.sourceCoins.filter(coin => inCourse(coin.x)).map(coin => ({
+      ...coin,
+      x: coin.x - sourceStart + platformXShiftAt(coin.x, coin.y)
+        + (coin.crateIndex === undefined ? 0 : crateXOffsets[coin.crateIndex] ?? 0),
+      y: coin.y + platformShiftAt(coin.x, coin.y), taken: false,
+    }));
+    this.activeCoinCount = this.coins.length;
+    this.raidBonusTarget = Math.ceil(this.coins.length * 0.65);
+    this.raidBonusAwarded = false;
+    this.crates = this.sourceCrates.filter(crate => inCourse(crate.x)).map((crate, crateIndex) => ({
+      ...crate,
+      x: crate.x - sourceStart + platformXShiftAt(crate.x, crate.surfaceY)
+        + (crateXOffsets[crateIndex] ?? 0),
+      surfaceY: crate.surfaceY + platformShiftAt(crate.x, crate.surfaceY), broken: false,
+    }));
+    this.spikeHazards = this.sourceSpikeHazards.filter(hazard => inCourse(hazard.x)).map((hazard, index) => {
+      const hazardX = hazard.x + (levelSpikeOffsets[index] ?? 0);
+      return {
+        ...hazard,
+        x: hazardX - sourceStart + platformXShiftAt(hazard.x, hazard.surfaceY),
+        surfaceY: hazard.surfaceY + platformShiftAt(hazard.x, hazard.surfaceY),
+      };
+    });
+    this.laserGates = this.sourceLaserGates
+      .filter(gate => inCourse((gate.leftPostX + gate.rightPostX) / 2))
+      .map((gate, gateIndex) => {
+        const offset = LEVEL_LASER_X_OFFSETS[this.levelIndex][gateIndex] ?? 0;
+        return {
+          ...gate,
+          leftPostX: gate.leftPostX - sourceStart + offset,
+          rightPostX: gate.rightPostX - sourceStart + offset,
+          phaseOffset: gate.phaseOffset + this.levelIndex * 0.45,
+        };
+      });
+    this.guards = this.sourceGuards.filter(guard => inCourse(guard.spawnX)).map((guard, guardIndex) => {
+      const hostIndex = sourcePlatformIndexAt(guard.spawnX, guard.spawnY + 30);
+      const host = this.activePlatforms[hostIndex];
+      const guardXOffset = (platformXOffsets[hostIndex] ?? 0) + (levelGuardOffsets[guardIndex] ?? 0);
+      const guardX = guard.spawnX + guardXOffset;
+      const groundShift = platformShiftAt(guard.spawnX, guard.spawnY + 30);
+      const patrolMin = Math.max(guard.minX + guardXOffset, (host?.x ?? 0) + 34);
+      const patrolMax = Math.min(guard.maxX + guardXOffset, (host?.x ?? this.courseWidth) + (host?.w ?? 0) - 34);
+      return {
+        ...guard, x: guardX - sourceStart, spawnX: guardX - sourceStart,
+        spawnY: guard.spawnY + groundShift,
+        minX: patrolMin - sourceStart,
+        maxX: patrolMax - sourceStart,
+        lastSeenX: guardX - sourceStart,
+      };
+    });
+    const hasBarrel = inCourse(this.sourceBarrel.x);
+    this.barrel = {
+      ...this.sourceBarrel,
+      x: hasBarrel ? this.sourceBarrel.x - sourceStart + platformXShiftAt(this.sourceBarrel.x, this.sourceBarrel.surfaceY) + LEVEL_BARREL_X_OFFSETS[this.levelIndex] : -10000,
+      surfaceY: this.sourceBarrel.surfaceY + platformShiftAt(this.sourceBarrel.x, this.sourceBarrel.surfaceY),
+    };
+    this.checkpoints = this.sourceCheckpoints.filter(point => point > sourceStart && point < sourceEnd).map(point => point - sourceStart);
+    if (this.checkpoints.length === 0) this.checkpoints = [Math.floor(this.courseWidth * 0.55)];
+    const levelStart = 0;
+    const levelEnd = this.courseWidth;
+    const firstPlatform = this.activePlatforms[0];
+    const spawnX = Math.max(100, (firstPlatform?.x ?? 0) + 100);
+    const spawnPlatform = this.activePlatforms.find(platform => spawnX >= platform.x && spawnX <= platform.x + platform.w);
+    const spawnSurfaceY = spawnPlatform?.y ?? FLOOR;
+    this.player = { x: spawnX, y: spawnSurfaceY - 34, vx: 0, vy: 0, grounded: true };
+    this.coins.forEach(c => { c.locked = c.crateIndex !== undefined; });
+    this.crates.forEach(crate => { crate.broken = false; });
+    this.score = 0; this.lives = 3; this.timeLeft = RUN_TIME_SECONDS; this.elapsed = 0; this.hurtTimer = 0; this.animTime = 0;
+    this.heroGait = 0; this.jumpAnticipationTimer = 0; this.jumpBufferTimer = 0; this.coyoteTimer = 0; this.autoLeapForward = false; this.landingTimer = 0; this.landingSquash = 0;
+    this.checkpointX = spawnX; this.checkpointY = spawnSurfaceY - 34; this.nextCheckpointIndex = 0;
+    this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+    this.tweens.killTweensOf(this.levelBanner);
+    this.levelBanner.setVisible(false).setAlpha(0).setY(145);
+    this.chestOpened = false; this.chestAnimTimer = 0;
+    this.speedTimer = 0; this.invisibilityTimer = 0; this.magnetTimer = 0; this.extraLifeAvailable = true; this.settingsOpen = false;
+    this.guards.forEach(guard => { guard.x = guard.spawnX; guard.y = guard.spawnY; guard.direction = guard.spawnDirection; guard.velocity = guard.direction * 76; guard.mode = 'patrol'; guard.timer = 0; guard.turning = false; guard.lastSeenX = guard.x; guard.anim = 0; guard.gait = 0; });
+    this.state = 'playing';
+    this.hudRefreshTimer = 0;
+    this.gameTopControls?.classList.add('is-visible');
+    this.touchControlMenu?.classList.toggle('is-visible', this.touchControlsVisible);
+    this.pauseMenu?.classList.remove('is-visible');
+    this.settingsMenu?.classList.remove('is-visible');
+    this.startBackgroundMusic();
+    this.updateMusicMix();
+    const gameSurface = document.getElementById('game');
+    if (gameSurface) gameSurface.style.backgroundImage = `url('${LEVEL_BACKGROUNDS[this.levelIndex]}')`;
+    // The level and landing menus are DOM siblings of Phaser's transparent
+    // canvas. Keep the canvas explicitly above the page artwork so gameplay
+    // objects cannot be covered by the scenery layer.
+    const canvas = this.game.canvas;
+    canvas.style.visibility = 'visible';
+    canvas.style.opacity = '1';
+    canvas.style.zIndex = '2';
+    this.titleImage?.setActive(false).setVisible(false);
+    this.titleLayer?.setActive(false).setVisible(false);
+    this.titleStartZone?.disableInteractive();
+    this.signText.setVisible(true);
+    // Keep the scene artwork on the game surface behind the transparent canvas.
+    // Phaser's camera background image is hidden because this game uses a
+    // viewport-cover CSS background for the level scenery.
+    this.backgroundArt.forEach(layer => layer.setVisible(false));
+    this.platformSprites.forEach(sprite => sprite.setVisible(false));
+    this.activePlatforms.forEach((platform, activeIndex) => {
+      const sourceIndex = this.activePlatformIndices[activeIndex];
+      const sprite = this.platformSprites[sourceIndex];
+      sprite?.setTexture(`stone-platform-${this.levelIndex}-${sourceIndex}`)
+        .setPosition(platform.x - 4, platform.y - 1)
+        .setDisplaySize(platform.w + 8, platform.h + 15)
+        .setVisible(true);
+    });
+    this.art.setVisible(true);
+    this.worldStaticArt.setVisible(true);
+    this.guardLightArt.setVisible(true);
+    this.hud.setVisible(true);
+    this.heroSprite.setVisible(true);
+    this.heroSprite.setPosition(this.player.x, this.player.y);
+    this.guardSprites.forEach(sprite => sprite.setVisible(false));
+    this.guards.forEach((guard, index) => this.guardSprites[index]?.setDepth(5).setPosition(guard.x, guard.y).setVisible(true));
+    this.spikeSprites.forEach(sprite => sprite.setVisible(false));
+    this.spikeHazards.forEach((hazard, index) => this.spikeSprites[index]?.setPosition(hazard.x, hazard.surfaceY).setVisible(true));
+    this.worldPropSprites.forEach(sprite => sprite.setVisible(false));
+    this.crates.forEach((crate, index) => this.worldPropSprites[index]?.setPosition(crate.x, crate.surfaceY).setVisible(true));
+    if (this.barrel.x >= 0) this.worldPropSprites[this.crates.length]?.setPosition(this.barrel.x, this.barrel.surfaceY).setVisible(true);
+    this.chestSprites.forEach(sprite => sprite.setVisible(false).setTexture('prop-chest-0'));
+    this.laserPostSprites.forEach(pair => pair.forEach(sprite => sprite.setVisible(false)));
+    this.laserGates.forEach((gate, index) => {
+      this.laserPostSprites[index]?.[0].setPosition(gate.leftPostX, LASER_POST_Y).setVisible(true);
+      this.laserPostSprites[index]?.[1].setPosition(gate.rightPostX, LASER_POST_Y).setVisible(true);
+    });
+    this.coinSprites.forEach(sprite => sprite.setVisible(false));
+    this.coins.forEach((coin, index) => this.coinSprites[index]?.setPosition(coin.x, coin.y).setVisible(!coin.taken));
+    this.platformSprites.forEach(sprite => sprite.setDepth(1));
+    this.worldPropSprites.forEach(sprite => sprite.setDepth(2));
+    this.spikeSprites.forEach(sprite => sprite.setDepth(2.5));
+    this.coinSprites.forEach(sprite => sprite.setDepth(3));
+    this.chestSprites.forEach(sprite => sprite.setDepth(2.5));
+    this.laserPostSprites.forEach(pair => pair.forEach(sprite => sprite.setDepth(2.5)));
+    this.heroSprite.setDepth(6);
+    this.art.setDepth(3);
+    this.guardLightArt.setDepth(4);
+    this.cameras.main.stopFollow();
+    this.cameras.main.setViewport(0, 0, this.scale.width, this.scale.height);
+    this.cameras.main.setBounds(levelStart, 0, levelEnd - levelStart, H);
+    this.cameras.main.setScroll(levelStart, 0);
+    this.cameras.main.startFollow(this.heroSprite, true, 0.12, 0.08);
+    const goalX = levelEnd - 110;
+    this.chestSprites[0].setPosition(goalX, FLOOR).setVisible(true).setTexture('prop-chest-0');
+    this.chestSprites[1].setVisible(false);
+    this.drawStaticWorld();
+    this.drawWorld();
+    this.drawHud(false);
+  }
+
+  private togglePause() {
+    if (this.settingsOpen) { this.closeSettings(true); return; }
+    if (this.state === 'playing') this.state = 'paused';
+    else if (this.state === 'paused') this.state = 'playing';
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused');
+    this.updateMusicMix();
+    this.drawHud(this.state === 'paused');
+  }
+
+  private resizeGameView(width: number, height: number) {
+    if (!width || !height) return;
+    // Keep the camera's world-space view at the design size. The canvas is
+    // resized to the browser viewport, so separate axis zooms fill it without
+    // exposing neighboring level sections on wide desktop screens.
+    const zoomX = 1;
+    const zoomY = 1;
+    const viewWidth = width;
+    const viewHeight = height;
+    this.cameras.main.setViewport(0, 0, viewWidth, viewHeight);
+    this.viewOffsetX = Math.max(0, (viewWidth - W) / 2);
+    this.viewOffsetY = Math.max(0, (viewHeight - H) / 2);
+    this.cameras.main.setZoom(zoomX, zoomY);
+
+    // Keep ground platforms visually connected to the bottom of a taller
+    // browser viewport while preserving their collision tops and jump layout.
+    this.activePlatforms.forEach((platform, activeIndex) => {
+      if (platform.y !== FLOOR) return;
+      const sprite = this.platformSprites[this.activePlatformIndices[activeIndex]];
+      if (!sprite) return;
+      sprite.setDisplaySize(platform.w + 8, Math.max(platform.h + 15, viewHeight - platform.y));
+    });
+
+    const fitCover = (image: Phaser.GameObjects.Image) => {
+      // Use the texture's native dimensions: the Game Object's display size can
+      // be changed during a previous resize and must not feed back into sizing.
+      const source = image.texture.getSourceImage() as { width?: number; height?: number };
+      const sourceWidth = source.width || W;
+      const sourceHeight = source.height || H;
+      const coverScale = Math.max(viewWidth / sourceWidth, viewHeight / sourceHeight);
+      const displayWidth = sourceWidth * coverScale;
+      const displayHeight = sourceHeight * coverScale;
+      image.setOrigin(0.5).setPosition(viewWidth / 2, viewHeight / 2).setDisplaySize(displayWidth, displayHeight);
+    };
+    if (this.titleImage) fitCover(this.titleImage);
+    this.backgroundArt.forEach(image => image
+      .setOrigin(0, 0)
+      .setPosition(0, 0)
+      .setDisplaySize(viewWidth, viewHeight));
+    this.titleLayer?.setPosition(this.viewOffsetX, this.viewOffsetY);
+    this.titleStartZone?.setPosition(543 + this.viewOffsetX, 640 + this.viewOffsetY);
+    this.levelBanner?.setPosition(viewWidth / 2, 145 + this.viewOffsetY);
+    this.modalButtonZone?.setPosition(viewWidth / 2, viewHeight / 2 + 142);
+  }
+
+  private activatePowerup(index: number) {
+    if (this.state !== 'playing') return;
+    let activated = true;
+    if (index === 0) this.speedTimer = 7;
+    if (index === 1) this.invisibilityTimer = 6;
+    if (index === 2) this.magnetTimer = 8;
+    if (index === 3 && this.extraLifeAvailable) { this.lives = Math.min(4, this.lives + 1); this.extraLifeAvailable = false; }
+    else if (index === 3) activated = false;
+    if (activated) {
+      this.playGameSound('power');
+      this.emitBurst(this.player.x, this.player.y - 42, 0xffdf74, 10);
+    }
+  }
+
+  private playGameSound(kind: 'start' | 'jump' | 'coin' | 'power' | 'guard' | 'hit' | 'chest' | 'win' | 'lose') {
+    if (!this.soundEnabled) return;
+    const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    this.audioContext ??= new AudioContextClass();
+    if (this.audioContext.state === 'suspended') void this.audioContext.resume();
+    if (!this.sfxBus) {
+      this.sfxBus = this.audioContext.createGain();
+      this.sfxBus.gain.value = 0.72;
+      this.sfxBus.connect(this.audioContext.destination);
+    }
+    const patterns: Record<typeof kind, { notes: number[]; wave: OscillatorType; duration: number; volume: number }> = {
+      start: { notes: [523, 659, 784], wave: 'triangle', duration: 0.12, volume: 0.045 },
+      jump: { notes: [360, 540], wave: 'sine', duration: 0.09, volume: 0.035 },
+      coin: { notes: [880, 1320], wave: 'sine', duration: 0.075, volume: 0.035 },
+      power: { notes: [440, 660, 880], wave: 'triangle', duration: 0.11, volume: 0.04 },
+      guard: { notes: [500, 390], wave: 'square', duration: 0.12, volume: 0.025 },
+      hit: { notes: [240, 150], wave: 'sawtooth', duration: 0.11, volume: 0.04 },
+      chest: { notes: [392, 523, 659, 784], wave: 'triangle', duration: 0.14, volume: 0.045 },
+      win: { notes: [523, 659, 784, 1047], wave: 'triangle', duration: 0.18, volume: 0.05 },
+      lose: { notes: [392, 330, 262], wave: 'sine', duration: 0.2, volume: 0.04 },
+    };
+    const pattern = patterns[kind];
+    const now = this.audioContext.currentTime + 0.015;
+    pattern.notes.forEach((frequency, index) => {
+      const start = now + index * pattern.duration * 0.72;
+      const oscillator = this.audioContext!.createOscillator();
+      const envelope = this.audioContext!.createGain();
+      oscillator.type = pattern.wave;
+      oscillator.frequency.setValueAtTime(frequency, start);
+      envelope.gain.setValueAtTime(0.0001, start);
+      envelope.gain.exponentialRampToValueAtTime(pattern.volume, start + 0.012);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, start + pattern.duration);
+      oscillator.connect(envelope); envelope.connect(this.sfxBus!);
+      oscillator.start(start); oscillator.stop(start + pattern.duration + 0.01);
+    });
+  }
+
+  private emitBurst(x: number, y: number, tint: number, quantity = 8) {
+    const emitter = this.add.particles(x, y, 'bean-coin', {
+      emitting: false, lifespan: 460, speed: { min: 70, max: 175 }, angle: { min: 205, max: 335 },
+      gravityY: 220, scale: { start: 0.42, end: 0 }, alpha: { start: 1, end: 0 }, tint, quantity,
+    });
+    emitter.explode(quantity, x, y);
+    this.time.delayedCall(600, () => emitter.destroy());
+  }
+
+  private finishRun(result: 'won' | 'lost') {
+    if (this.state !== 'playing') return;
+    if (result === 'won') {
+      const collected = this.coins.filter(coin => coin.taken).length;
+      if (collected >= this.raidBonusTarget) {
+        this.raidBonusAwarded = true;
+        this.score += 500;
+        this.emitBurst(this.player.x, this.player.y - 48, 0xffdf74, 34);
+      }
+    }
+    this.state = result;
+    this.updateMusicMix();
+    if (result === 'won' && this.levelIndex < 2) {
+      this.unlockedLevel = Math.max(this.unlockedLevel, this.levelIndex + 1);
+      localStorage.setItem('fagiolo-unlocked-level', String(this.unlockedLevel));
+    }
+    this.titleStartZone?.setInteractive();
+    this.playGameSound(result === 'won' ? 'win' : 'lose');
+    if (result === 'won') this.emitBurst(this.player.x, this.player.y - 48, 0xffd365, 26);
+  }
+
+  update(_time: number, delta: number) {
+    if (this.state !== 'playing') {
+      if (this.state === 'title') {
+        this.animTime += Math.min(delta / 1000, 0.04);
+        this.titleBean?.setY(618 + Math.sin(this.animTime * 2.1) * 7).setAngle(Math.sin(this.animTime * 1.2) * 2.5);
+      }
+      return;
+    }
+    const dt = Math.min(delta / 1000, 0.04);
+    this.elapsed += dt;
+    this.animTime += dt;
+    this.hurtTimer = Math.max(0, this.hurtTimer - dt);
+    this.speedTimer = Math.max(0, this.speedTimer - dt);
+    this.invisibilityTimer = Math.max(0, this.invisibilityTimer - dt);
+    this.magnetTimer = Math.max(0, this.magnetTimer - dt);
+    this.landingTimer = Math.max(0, this.landingTimer - dt);
+    this.landingSquash = Math.max(0, this.landingSquash - dt * 5.5);
+    if (this.chestOpened) this.chestAnimTimer = Math.min(1.05, this.chestAnimTimer + dt);
+    this.updateGuards(dt);
+    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power1)) this.activatePowerup(0);
+    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power2)) this.activatePowerup(1);
+    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power3)) this.activatePowerup(2);
+    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power4)) this.activatePowerup(3);
+    if (this.elapsed >= 1) { this.timeLeft = Math.max(0, this.timeLeft - 1); this.elapsed = 0; }
+    const left = this.touchLeft || this.keys.left.isDown || this.keys.a.isDown || !!this.cursors?.left.isDown;
+    const right = this.touchRight || this.keys.right.isDown || this.keys.d.isDown || !!this.cursors?.right.isDown;
+    const jumpPressed = this.touchJumpPressed || Phaser.Input.Keyboard.JustDown(this.keys.jump) || Phaser.Input.Keyboard.JustDown(this.keys.w) || Phaser.Input.Keyboard.JustDown(this.keys.space) || !!(this.cursors && Phaser.Input.Keyboard.JustDown(this.cursors.up));
+    const jumpHeld = this.touchJumpHeld || this.keys.jump.isDown || this.keys.w.isDown || this.keys.space.isDown || !!this.cursors?.up.isDown;
+    this.touchJumpPressed = false;
+    const moveSpeed = this.speedTimer > 0 ? 520 : 335;
+    const targetVx = left === right
+      ? (!this.player.grounded && this.autoLeapForward ? (this.faceRight ? moveSpeed : -moveSpeed) : 0)
+      : left ? -moveSpeed : moveSpeed;
+    const acceleration = left === right ? (this.player.grounded ? 2900 : this.autoLeapForward ? 1500 : 220) : this.player.grounded ? 2300 : 1250;
+    this.player.vx += Phaser.Math.Clamp(targetVx - this.player.vx, -acceleration * dt, acceleration * dt);
+    if (this.player.vx) this.faceRight = this.player.vx > 0;
+    if (jumpPressed) this.jumpBufferTimer = 0.16;
+    else this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
+    if (this.player.grounded) this.coyoteTimer = 0.15;
+    else this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
+    if (this.jumpBufferTimer > 0 && (this.player.grounded || this.coyoteTimer > 0)) {
+      this.player.vy = -660;
+      this.player.grounded = false;
+      // A directionless jump becomes a forward leap that carries through the air.
+      // If a direction is held, preserve the player's deliberate steering instead.
+      this.autoLeapForward = left === right;
+      if (this.autoLeapForward) this.player.vx = this.faceRight ? moveSpeed : -moveSpeed;
+      this.coyoteTimer = 0;
+      this.jumpBufferTimer = 0;
+      this.playGameSound('jump');
+    }
+    const gravity = this.player.vy < 0 ? (jumpHeld ? 1250 : 2250) : 1850;
+    this.player.vy += gravity * dt;
+    const oldY = this.player.y;
+    const oldX = this.player.x;
+    const wasGrounded = this.player.grounded;
+    this.player.x = Phaser.Math.Clamp(this.player.x + this.player.vx * dt, 24, this.courseWidth - 24);
+    this.player.y += this.player.vy * dt;
+    this.player.grounded = false;
+
+    // Crates can be smashed by a stomp or a rising jump into their side.
+    for (let i = 0; i < this.crates.length; i++) {
+      const crate = this.crates[i];
+      if (crate.broken) continue;
+      const leftEdge = crate.x - crate.width / 2, rightEdge = crate.x + crate.width / 2;
+      const top = crate.surfaceY - crate.height;
+      const overlapsX = this.player.x + 22 > leftEdge && this.player.x - 22 < rightEdge;
+      const landedOnTop = overlapsX && oldY + 34 <= top && this.player.y + 34 >= top && this.player.vy >= 0;
+      if (landedOnTop) { this.breakCrate(i); continue; }
+
+      const overlapsBody = overlapsX && this.player.y + 30 > top && this.player.y - 30 < crate.surfaceY;
+      if (!overlapsBody) continue;
+      if (this.player.vy < 0 && this.player.y < oldY) { this.breakCrate(i); continue; }
+      if (oldX <= leftEdge - 22 && this.player.x > oldX) this.player.x = leftEdge - 22;
+      else if (oldX >= rightEdge + 22 && this.player.x < oldX) this.player.x = rightEdge + 22;
+      this.player.vx = 0;
+    }
+
+    // The barrel is a climbable solid platform and a visual cover point.
+    const barrelTop = this.barrel.surfaceY - this.barrel.height;
+    const barrelLeft = this.barrel.x - this.barrel.width / 2, barrelRight = this.barrel.x + this.barrel.width / 2;
+    const overlapsBarrelX = this.player.x + 22 > barrelLeft && this.player.x - 22 < barrelRight;
+    if (overlapsBarrelX && oldY + 34 <= barrelTop && this.player.y + 34 >= barrelTop && this.player.vy >= 0) {
+      this.player.y = barrelTop - 34; this.player.vy = 0; this.player.grounded = true;
+    } else if (overlapsBarrelX && this.player.y + 30 > barrelTop && this.player.y - 30 < this.barrel.surfaceY) {
+      if (oldX <= barrelLeft - 22 && this.player.x > oldX) this.player.x = barrelLeft - 22;
+      else if (oldX >= barrelRight + 22 && this.player.x < oldX) this.player.x = barrelRight + 22;
+      this.player.vx = 0;
+    }
+
+    for (const p of this.activePlatforms) {
+      const overlapsX = this.player.x + 22 > p.x && this.player.x - 22 < p.x + p.w;
+      if (overlapsX && oldY + 34 <= p.y && this.player.y + 34 >= p.y && this.player.vy >= 0) {
+        this.player.y = p.y - 34; this.player.vy = 0; this.player.grounded = true;
+      }
+    }
+    if (!wasGrounded && this.player.grounded) { this.landingTimer = 0.14; this.landingSquash = 1; this.autoLeapForward = false; }
+    if (this.player.grounded && this.nextCheckpointIndex < this.checkpoints.length && this.player.x >= this.checkpoints[this.nextCheckpointIndex]) {
+      this.checkpointX = this.checkpoints[this.nextCheckpointIndex];
+      this.checkpointY = this.player.y;
+      this.nextCheckpointIndex++;
+      this.emitBurst(this.checkpointX, this.player.y - 34, 0x76e0a5, 12);
+      const checkpointLabel = this.add.text(this.checkpointX, this.player.y - 76, 'CHECKPOINT', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '18px', fontStyle: 'bold', color: '#bfffd2', stroke: '#173b2b', strokeThickness: 5 }).setOrigin(0.5).setDepth(4);
+      this.tweens.add({ targets: checkpointLabel, y: checkpointLabel.y - 35, alpha: 0, duration: 900, ease: 'Cubic.Out', onComplete: () => checkpointLabel.destroy() });
+    }
+    if (this.player.grounded && Math.abs(this.player.vx) > 0) {
+      this.heroGait += Math.min(Math.abs(this.player.vx), 420) * dt / 180;
+    }
+    if (this.player.y > H + 100) this.takeHit();
+    for (const hazard of this.spikeHazards) {
+      const intersectsSpikes = Math.abs(this.player.x - hazard.x) < 60
+        && this.player.y + 27 > hazard.surfaceY - 48
+        && this.player.y - 27 < hazard.surfaceY;
+      if (this.isSpikeHazardActive(hazard) && intersectsSpikes) this.takeHit();
+    }
+    for (const gate of this.laserGates) {
+      const laserActive = this.getLaserMode(gate) === 'active';
+      const leftEmitterX = gate.leftPostX + LASER_EMITTER_X_OFFSET;
+      const rightEmitterX = gate.rightPostX - LASER_EMITTER_X_OFFSET;
+      if (laserActive && this.player.x > leftEmitterX && this.player.x < rightEmitterX && Math.abs(this.player.y - LASER_Y) < 48) this.takeHit();
+    }
+    for (const c of this.coins) {
+      const collectRadius = this.magnetTimer > 0 ? 190 : 48;
+      if (!c.taken && !c.locked && Phaser.Math.Distance.Between(this.player.x, this.player.y, c.x, c.y) < collectRadius) {
+        c.taken = true; this.score += 100;
+        this.playGameSound('coin');
+        this.emitBurst(c.x, c.y, 0xffdd4d, 7);
+        const popup = this.add.text(c.x, c.y - 20, '+100', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#fff1a4', stroke: '#58330c', strokeThickness: 4 }).setOrigin(0.5).setDepth(3);
+        this.tweens.add({ targets: popup, y: popup.y - 46, alpha: 0, duration: 620, ease: 'Cubic.Out', onComplete: () => popup.destroy() });
+      }
+    }
+    this.coins.forEach((coin, i) => {
+      const sprite = this.coinSprites[i];
+      sprite.setVisible(!coin.taken && !coin.locked);
+      sprite.setY(coin.y + Math.sin(this.animTime * 5 + coin.x) * 4);
+      sprite.setAngle(Math.sin(this.animTime * 2.2 + coin.x) * 12);
+    });
+    const levelEnd = this.courseWidth;
+    if (!this.chestOpened && this.player.x >= levelEnd - 220) {
+      this.chestOpened = true; this.chestAnimTimer = 0; this.playGameSound('chest'); this.emitBurst(levelEnd - 110, 690, 0xffd365, 18);
+    }
+    if (this.player.x >= levelEnd - 180 && this.chestOpened && this.chestAnimTimer >= 1.05) this.finishRun('won');
+    if (this.timeLeft <= 0 && this.state === 'playing') this.finishRun('lost');
+    this.drawWorld();
+    this.hudRefreshTimer += dt;
+    if (this.hudRefreshTimer >= 0.05) {
+      this.hudRefreshTimer %= 0.05;
+      this.drawHud(this.state === 'paused');
+    }
+  }
+
+  private breakCrate(index: number) {
+    const crate = this.crates[index];
+    if (!crate || crate.broken) return;
+    crate.broken = true;
+    this.worldPropSprites[index]?.setVisible(false);
+    const reward = this.coins.find(coin => coin.crateIndex === index);
+    if (reward) reward.locked = false;
+    this.playGameSound('chest');
+    this.emitBurst(crate.x, crate.surfaceY - crate.height / 2, 0xc47a35, 14);
+    this.emitBurst(crate.x, crate.surfaceY - crate.height, 0xffd365, 7);
+  }
+
+  private updateGuards(dt: number) {
+    for (const guard of this.guards) {
+      guard.anim += dt;
+      const dx = this.player.x - guard.x;
+      const dy = this.player.y - guard.y;
+      const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, guard.x, guard.y);
+      const barrelCovered = this.isPlayerCoveredByBarrel(guard);
+      const playerInFacingArc = dx * guard.direction > -28
+        && (Math.abs(dx) < 72 || Math.abs(dy) < Math.max(48, Math.abs(dx) * 0.28));
+      const canSeePlayer = this.invisibilityTimer <= 0 && Math.abs(dy) < 145 && !barrelCovered && playerInFacingArc;
+      if (guard.mode === 'patrol') {
+        if (guard.x <= guard.minX + 3) guard.direction = 1;
+        if (guard.x >= guard.maxX - 3) guard.direction = -1;
+        this.moveGuard(guard, guard.direction * 84, 420, dt);
+        guard.x = Phaser.Math.Clamp(guard.x, guard.minX, guard.maxX);
+        if (canSeePlayer && distance < 345) {
+          guard.mode = 'alert'; guard.timer = 0.9; guard.lastSeenX = this.player.x; guard.velocity = 0;
+          this.playGameSound('guard');
+        }
+      } else if (guard.mode === 'alert') {
+        guard.timer -= dt;
+        guard.direction = dx < 0 ? -1 : 1;
+        guard.velocity = 0;
+        guard.lastSeenX = this.player.x;
+        if (this.invisibilityTimer > 0) { guard.mode = 'search'; guard.timer = 2.4; }
+        else if (guard.timer <= 0) { guard.mode = 'chase'; }
+      } else if (guard.mode === 'chase') {
+        if (this.invisibilityTimer > 0 || distance > 650 || Math.abs(dy) > 165 || barrelCovered) {
+          guard.mode = 'search'; guard.timer = 2.8; guard.lastSeenX = this.player.x;
+        } else {
+          const targetDirection = dx < 0 ? -1 : 1;
+          guard.direction = targetDirection;
+          if ((targetDirection < 0 && guard.x <= guard.minX + 3) || (targetDirection > 0 && guard.x >= guard.maxX - 3)) guard.direction = -targetDirection;
+          this.moveGuard(guard, guard.direction * 155, 560, dt);
+          guard.x = Phaser.Math.Clamp(guard.x, guard.minX, guard.maxX);
+          if (distance < 54 && this.hurtTimer <= 0) {
+            this.takeHit(); guard.mode = 'stunned'; guard.timer = 1.25;
+          }
+        }
+      } else if (guard.mode === 'search') {
+        guard.timer -= dt;
+        const offset = guard.lastSeenX - guard.x;
+        if (Math.abs(offset) > 12) {
+          guard.direction = offset < 0 ? -1 : 1;
+          this.moveGuard(guard, guard.direction * 68, 300, dt);
+          guard.x = Phaser.Math.Clamp(guard.x, guard.minX, guard.maxX);
+        } else {
+          this.moveGuard(guard, 0, 420, dt);
+          guard.direction = Math.sin(guard.anim * 3.2) < 0 ? -1 : 1;
+        }
+        if (guard.timer <= 0) guard.mode = 'patrol';
+      } else if (guard.mode === 'stunned') {
+        guard.timer -= dt;
+        if (guard.timer <= 0) guard.mode = 'patrol';
+      }
+    }
+  }
+
+  private isPlayerCoveredByBarrel(guard: GuardAgent) {
+    const left = this.barrel.x - this.barrel.width / 2;
+    const right = this.barrel.x + this.barrel.width / 2;
+    const oppositeSides = (guard.x < left && this.player.x > right) || (guard.x > right && this.player.x < left);
+    if (!oppositeSides) return false;
+    const t = (this.barrel.x - guard.x) / (this.player.x - guard.x);
+    const sightY = guard.y + (this.player.y - guard.y) * t;
+    const barrelTop = this.barrel.surfaceY - this.barrel.height;
+    return sightY >= barrelTop - 12 && sightY <= this.barrel.surfaceY + 12;
+  }
+
+  private moveGuard(guard: GuardAgent, targetVelocity: number, acceleration: number, dt: number) {
+    const velocityDelta = Phaser.Math.Clamp(targetVelocity - guard.velocity, -acceleration * dt, acceleration * dt);
+    guard.velocity += velocityDelta;
+    if (Math.abs(guard.velocity) > 8) guard.direction = Math.sign(guard.velocity);
+    guard.x += guard.velocity * dt;
+    if (Math.abs(guard.velocity) > 12) {
+      const strideLength = 68 + Math.max(0, Math.abs(guard.velocity) - 100) * 0.16;
+      guard.gait += Math.abs(guard.velocity) * dt / strideLength;
+    }
+  }
+
+  private takeHit() {
+    if (this.hurtTimer > 0 || this.invisibilityTimer > 0 || this.state !== 'playing') return;
+    this.lives -= 1;
+    this.timeLeft = Math.max(0, this.timeLeft - 3);
+    this.hurtTimer = 1.2;
+    this.playGameSound('hit');
+    this.cameras.main.flash(130, 255, 93, 72, false);
+    if (this.screenShakeEnabled) this.cameras.main.shake(190, 0.008);
+    this.emitBurst(this.player.x, this.player.y - 34, 0xff796a, 10);
+    if (this.lives <= 0) { this.finishRun('lost'); return; }
+    this.player.x = this.checkpointX; this.player.y = this.checkpointY; this.player.vx = 0; this.player.vy = 0;
+    this.player.grounded = true;
+    this.autoLeapForward = false;
+    this.landingSquash = 0;
+    this.coyoteTimer = 0.12;
+    this.jumpBufferTimer = 0;
+  }
+
+  private drawWorld() {
+    const g = this.art;
+    g.clear();
+    for (const checkpoint of this.checkpoints) {
+      const secured = checkpoint <= this.checkpointX;
+      const pulse = (Math.sin(this.animTime * 3.5 + checkpoint) + 1) / 2;
+      g.fillStyle(secured ? 0x9bf2c0 : 0xffd47a, 0.82 + pulse * 0.18);
+      g.fillTriangle(checkpoint + 2, FLOOR - 78, checkpoint + 39, FLOOR - 65, checkpoint + 2, FLOOR - 52);
+      g.fillStyle(secured ? 0x7cf0b0 : 0xffe7a1, 0.35 + pulse * 0.34);
+      g.fillCircle(checkpoint, FLOOR - 88, secured ? 7 : 5 + pulse * 2);
+    }
+    const cameraLeft = this.cameras.main.scrollX - 360;
+    const cameraRight = this.cameras.main.scrollX + this.cameras.main.width + 360;
+    for (let i = 0; i < this.laserGates.length; i++) {
+      const gate = this.laserGates[i];
+      if (gate.rightPostX < cameraLeft || gate.leftPostX > cameraRight) continue;
+      const mode = this.getLaserMode(gate);
+      this.drawLaser(g, gate, mode);
+      this.updateLaserPosts(i, mode);
+    }
+    this.spikeHazards.forEach((hazard, i) => {
+      this.updateSpikeVisual(this.spikeSprites[i], hazard);
+      const phase = this.getSpikePhase(hazard);
+      if (phase >= 3.65 && phase < 4.15) {
+        const pulse = (Math.sin(this.animTime * 20) + 1) / 2;
+        g.fillStyle(0xff4b53, 0.12 + pulse * 0.16);
+        g.fillEllipse(hazard.x, hazard.surfaceY - 2, 92, 12);
+        g.lineStyle(2, 0xff7575, 0.42 + pulse * 0.38);
+        g.lineBetween(hazard.x - 42, hazard.surfaceY - 9, hazard.x + 42, hazard.surfaceY - 9);
+      }
+    });
+    this.chestSprites[0].setTexture(`prop-chest-${this.getChestFrame()}`);
+    this.drawGuardLights();
+    // Each standalone level contains only its own guards, while guardSprites
+    // is allocated once for the full original course. Iterate the active
+    // guards so a missing guard cannot throw and abort drawing Fagiolo and HUD.
+    this.guards.forEach((guard, i) => {
+      const sprite = this.guardSprites[i];
+      if (sprite) this.drawGuardSprite(sprite, guard);
+    });
+    for (const guard of this.guards) if (guard.mode === 'alert') {
+      g.fillStyle(0xffdc39, 1); g.fillCircle(guard.x, guard.y - 140, 18);
+      g.fillStyle(0x173260, 1); g.fillRoundedRect(guard.x - 2, guard.y - 149, 4, 12, 2); g.fillCircle(guard.x, guard.y - 132, 2);
+    }
+    this.drawHero(g);
+  }
+
+  private drawStaticWorld() {
+    const g = this.worldStaticArt;
+    g.clear();
+    this.drawWarningSign(g, 36, 432);
+    for (const checkpoint of this.checkpoints) {
+      g.fillStyle(0x09131a, 0.38); g.fillEllipse(checkpoint, FLOOR - 4, 48, 10);
+      g.fillStyle(0xc99a45, 0.9); g.fillRoundedRect(checkpoint - 3, FLOOR - 83, 6, 80, 3);
+    }
+  }
+
+  private drawStonePlatform(g: Phaser.GameObjects.Graphics, p: typeof platforms[number], index: number) {
+    const top = p.y;
+    const bottom = p.y + p.h;
+    const materials = [
+      { body: 0x46535a, face: 0x657276, cap: 0x879396, light: 0xb0b8b1, mortar: 0x303c42 },
+      { body: 0x3c504e, face: 0x58706a, cap: 0x789088, light: 0xa9b69d, mortar: 0x293c39 },
+      { body: 0x3d4858, face: 0x56647a, cap: 0x75849a, light: 0xa5b2bf, mortar: 0x293343 },
+      { body: 0x564e43, face: 0x716758, cap: 0x96866b, light: 0xc1ae88, mortar: 0x3d352d },
+    ];
+    const material = materials[index % materials.length];
+    const brickWidth = [64, 82, 72, 94][index % 4];
+    const brickHeight = [27, 32, 29, 35][index % 4];
+
+    // A tight contact shadow separates each block from the world behind it.
+    g.fillStyle(0x080d12, 0.5); g.fillRoundedRect(p.x - 3, top + 9, p.w + 6, p.h + 5, 5);
+    g.fillStyle(0x202b32, 1); g.fillRect(p.x, top + 8, p.w, Math.max(1, p.h - 8));
+    g.fillStyle(material.body, 1); g.fillRect(p.x + 2, top + 12, p.w - 4, Math.max(1, p.h - 18));
+    g.fillStyle(material.face, 1); g.fillRect(p.x + 3, top + 13, p.w - 6, Math.max(1, p.h - 21));
+
+    // Irregularly shaded masonry keeps the repeated block shapes from looking flat.
+    const stoneColors = [material.face, material.body, material.cap, 0x59656a, 0x626d70];
+    let row = 0;
+    for (let y = top + 21; y + brickHeight - 3 < bottom; y += brickHeight, row++) {
+      const stagger = (row + index) % 2 === 0 ? (index * 13) % brickWidth : brickWidth / 2;
+      for (let x = p.x - stagger; x < p.x + p.w; x += brickWidth) {
+        const left = Math.max(p.x + 3, x + 2);
+        const right = Math.min(p.x + p.w - 3, x + brickWidth - 2);
+        if (right - left < 8) continue;
+        const shade = Math.abs(Math.sin((index + 1) * 13.7 + row * 4.1 + Math.floor(x / brickWidth) * 2.3));
+        const color = stoneColors[Math.floor(shade * stoneColors.length) % stoneColors.length];
+        g.fillStyle(color, 0.38 + shade * 0.2);
+        g.fillRoundedRect(left, y + 2, right - left, brickHeight - 4, 3);
+        g.fillStyle(0xb3b9b3, 0.14 + shade * 0.08);
+        g.fillRoundedRect(left + 7, y + 5, Math.max(8, right - left - 22), 2, 1);
+      }
+      g.lineStyle(2, material.mortar, 0.78);
+      g.lineBetween(p.x + 2, y + brickHeight, p.x + p.w - 2, y + brickHeight);
+    }
+
+    // Broken, angled face joints and occasional worn insets give each segment
+    // a distinct masonry silhouette while leaving the top collision edge clean.
+    if (p.h > 85) {
+      const crackX = p.x + 30 + (index * 47) % Math.max(44, p.w - 60);
+      const crackY = top + 37;
+      g.lineStyle(1.5, 0x263238, 0.62);
+      g.lineBetween(crackX, crackY, crackX - 5, crackY + 9);
+      g.lineBetween(crackX - 5, crackY + 9, crackX + 2, crackY + 17);
+      g.lineBetween(crackX + 2, crackY + 17, crackX - 2, crackY + 26);
+      if (index % 3 === 1) {
+        g.fillStyle(material.mortar, 0.48);
+        g.fillRoundedRect(p.x + p.w - 12, top + 24, 5, Math.min(30, p.h - 35), 2);
+      }
+    }
+
+    // A thick, readable stone cap gives the player a clear landing surface.
+    g.fillStyle(material.mortar, 1); g.fillRoundedRect(p.x - 4, top - 1, p.w + 8, 17, 4);
+    g.fillStyle(material.cap, 1); g.fillRoundedRect(p.x, top - 1, p.w, 12, 3);
+    g.fillStyle(material.light, 0.72); g.fillRoundedRect(p.x + 5, top, p.w - 10, 2, 1);
+    g.fillStyle(material.body, 1); g.fillRect(p.x + 2, top + 10, p.w - 4, 4);
+
+    // Fine joints across the cap read as broad paving stones on the floor.
+    g.lineStyle(1, material.mortar, 0.62);
+    const tileOffset = 22 + (index * 29) % 68;
+    const tileWidth = [66, 88, 74, 102][index % 4];
+    for (let x = p.x + tileOffset; x < p.x + p.w - 8; x += tileWidth) {
+      g.lineBetween(x, top + 2, x, top + 9);
+    }
+    // Small chipped corners soften the silhouette without obscuring the edge.
+    g.fillStyle(material.mortar, 0.78);
+    if (index % 2 === 0) g.fillTriangle(p.x, top - 1, p.x + 8, top - 1, p.x + 2, top + 4);
+    else g.fillTriangle(p.x + p.w, top - 1, p.x + p.w - 7, top - 1, p.x + p.w - 2, top + 4);
+  }
+
+  private drawGuardLights() {
+    const g = this.guardLightArt;
+    g.clear();
+    const cameraLeft = this.cameras.main.scrollX - 360;
+    const cameraRight = this.cameras.main.scrollX + this.cameras.main.width + 360;
+    for (let i = 0; i < this.guards.length; i++) {
+      const guard = this.guards[i];
+      if (guard.x < cameraLeft || guard.x > cameraRight) continue;
+      const direction = guard.direction || 1;
+      const sprite = this.guardSprites[i];
+      const frame = this.getGuardFrame(guard);
+      const anchor = this.getTorchAnchor(frame);
+      const flipX = this.guardFrameFacesRight(frame) !== (direction > 0);
+      const footCorrection = this.getGuardFootCorrection(frame, sprite.displayHeight);
+      const sourceX = guard.x + (anchor.x - 256) * (sprite.displayWidth / 512) * (flipX ? -1 : 1);
+      const sourceY = guard.y + footCorrection + (anchor.y - 448 * sprite.originY) * (sprite.displayHeight / 448);
+      const patrolPulse = (Math.sin(guard.anim * 3.6) + 1) / 2;
+      let alpha = 0.14 + patrolPulse * 0.12;
+      let tipX = sourceX + direction * (330 + Math.sin(guard.anim * 1.7) * 20);
+      let tipY = sourceY + 55 + Math.sin(guard.anim * 2.1) * 50;
+      let width = 43;
+      if (guard.mode === 'alert' || guard.mode === 'chase') {
+        const dx = this.player.x - sourceX;
+        const dy = this.player.y - 34 - sourceY;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        tipX = sourceX + (dx / length) * Math.min(length + 100, 340);
+        tipY = sourceY + (dy / length) * Math.min(length + 100, 340);
+        width = guard.mode === 'chase' ? 64 : 52;
+        alpha = 0.32 + patrolPulse * 0.14;
+      } else if (guard.mode === 'search') {
+        tipX = sourceX + direction * (180 + Math.sin(guard.anim * 5) * 100);
+        tipY = sourceY + 45 + Math.sin(guard.anim * 4) * 38;
+        alpha = 0.2;
+      } else if (guard.mode === 'stunned') {
+        alpha = Math.sin(guard.anim * 18) > 0.25 ? 0.22 : 0.035;
+        tipX = sourceX + direction * 140;
+        tipY = sourceY + 70;
+      }
+      const dx = tipX - sourceX;
+      const dy = tipY - sourceY;
+      const length = Math.max(1, Math.hypot(dx, dy));
+      const px = (-dy / length) * width;
+      const py = (dx / length) * width;
+      g.fillStyle(0xffd665, alpha * 0.38);
+      g.fillTriangle(sourceX, sourceY, tipX - px, tipY - py, tipX + px, tipY + py);
+      g.fillStyle(0xfff0a5, alpha);
+      g.fillTriangle(sourceX, sourceY, tipX - px * 0.48, tipY - py * 0.48, tipX + px * 0.48, tipY + py * 0.48);
+      g.fillStyle(0xfff6bf, alpha + 0.18);
+      g.fillCircle(sourceX, sourceY, guard.mode === 'alert' || guard.mode === 'chase' ? 6 : 4);
+    }
+  }
+
+  private getGuardFrame(guard: GuardAgent) {
+    let frame = 'guard-idle';
+    const walking = (guard.mode === 'patrol' || guard.mode === 'search' || guard.mode === 'chase') && Math.abs(guard.velocity) > 12;
+    if (guard.mode === 'stunned') frame = 'guard-stunned';
+    else if (walking) {
+      frame = `guard-walk-${Math.floor((guard.gait % 1) * 6)}`;
+    }
+    return frame;
+  }
+
+  private getGuardFootCorrection(frame: string, displayHeight: number) {
+    const frameBottom = frame === 'guard-idle' ? 438 : frame === 'guard-stunned' ? 436 : 419;
+    return (438 - frameBottom) * displayHeight / 448;
+  }
+
+  private guardFrameFacesRight(frame: string) {
+    return frame.startsWith('guard-walk-');
+  }
+
+  private getTorchAnchor(frame: string) {
+    if (frame === 'guard-stunned') return { x: 135, y: 350 };
+    if (frame === 'guard-idle') return { x: 119, y: 244 };
+    const anchors = [
+      { x: 359, y: 241 }, { x: 356, y: 249 }, { x: 356, y: 245 },
+      { x: 359, y: 239 }, { x: 356, y: 253 }, { x: 356, y: 246 },
+    ];
+    const index = Number(frame.slice('guard-walk-'.length)) || 0;
+    return anchors[index] ?? anchors[0];
+  }
+
+  private drawGuardSprite(sprite: Phaser.GameObjects.Image, guard: GuardAgent) {
+    const frame = this.getGuardFrame(guard);
+    const shouldFlip = this.guardFrameFacesRight(frame) !== (guard.direction > 0);
+    sprite.setTexture(frame).setPosition(guard.x, guard.y + this.getGuardFootCorrection(frame, sprite.displayHeight)).setFlipX(shouldFlip);
+    // Keep the sprite's feet on the platform; reactions are shown through pose and torch movement.
+    sprite.setAngle(0);
+  }
+
+  private createSpriteArt() {
+    const makeCanvasTexture = (key: string, width: number, height: number, paint: (ctx: CanvasRenderingContext2D) => void) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not create sprite canvas');
+      paint(ctx);
+      this.textures.addCanvas(key, canvas);
+    };
+    const makeBean = (key: string, stride: number, airborne: boolean, wave: number) => makeCanvasTexture(key, 112, 128, ctx => {
+      ctx.save();
+      ctx.translate(56, 83);
+      const lift = airborne ? -7 : 0;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#17151a'; ctx.lineWidth = 9;
+      ctx.beginPath(); ctx.moveTo(-10, 17 + lift); ctx.lineTo(-15 + stride, 34 + lift); ctx.moveTo(10, 17 + lift); ctx.lineTo(15 - stride, 34 + lift); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#17151a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.roundRect(-35 + stride, 28 + lift, 34, 17, 8); ctx.roundRect(1 - stride, 28 + lift, 34, 17, 8); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = '#11120e'; ctx.lineWidth = 11; ctx.beginPath(); ctx.moveTo(-28, -4); ctx.lineTo(-44, 7); ctx.moveTo(27, -3); ctx.lineTo(43, -14 - wave); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-45, 9, 10, 0, Math.PI * 2); ctx.arc(44, -17 - wave, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#11120e'; ctx.beginPath(); ctx.ellipse(0, -9, 40, 45, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#7fe51b'; ctx.beginPath(); ctx.ellipse(0, -11, 36, 41, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(203,255,102,.72)'; ctx.beginPath(); ctx.ellipse(-13, -30, 12, 8, -.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.ellipse(-12, -27, 4, 7, 0, 0, Math.PI * 2); ctx.ellipse(13, -27, 4, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-13, -29, 1.8, 0, Math.PI * 2); ctx.arc(12, -29, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 3.5; ctx.beginPath(); ctx.arc(3, -10, 18, .1, 1.9); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.roundRect(-3, -9, 19, 7, 3); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#191919'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.ellipse(0, -55, 26, 11, 0, Math.PI, Math.PI * 2); ctx.lineTo(28, -51); ctx.quadraticCurveTo(9, -45, -23, -48); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#161616'; ctx.font = 'bold 7px Trebuchet MS'; ctx.textAlign = 'center'; ctx.fillText('FAGIOLO', 0, -52);
+      ctx.restore();
+    });
+    makeBean('bean-idle', 0, false, 0);
+    makeBean('bean-run-a', -8, false, 4);
+    makeBean('bean-run-b', 8, false, 0);
+    makeBean('bean-jump', -4, true, 2);
+    makeCanvasTexture('bean-coin', 56, 64, ctx => {
+      ctx.save(); ctx.translate(28, 32); ctx.rotate(-.18);
+      ctx.fillStyle = '#984a05'; ctx.beginPath(); ctx.ellipse(0, 0, 19, 25, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffc51b'; ctx.beginPath(); ctx.ellipse(-2, -1, 16, 21, 0, 0, Math.PI * 2); ctx.ellipse(7, -3, 8, 16, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffec67'; ctx.beginPath(); ctx.ellipse(-8, -8, 4, 11, -.3, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff3a1'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, 0, 13, 17, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    });
+    makeCanvasTexture('guard', 92, 116, ctx => {
+      ctx.save(); ctx.translate(46, 84);
+      ctx.fillStyle = '#151b27'; ctx.beginPath(); ctx.ellipse(0, 4, 36, 30, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#174785'; ctx.beginPath(); ctx.roundRect(-30, -42, 60, 57, 15); ctx.fill();
+      ctx.fillStyle = '#f3c58c'; ctx.beginPath(); ctx.ellipse(0, -49, 22, 20, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#10151c'; ctx.beginPath(); ctx.roundRect(-25, -78, 50, 13, 5); ctx.fill();
+      ctx.fillStyle = '#16417e'; ctx.beginPath(); ctx.roundRect(-17, -94, 34, 22, 8); ctx.fill();
+      ctx.fillStyle = '#f5cc31'; ctx.beginPath(); ctx.arc(0, -84, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#12161d'; ctx.beginPath(); ctx.roundRect(-23, -57, 46, 9, 4); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillRect(-14, -54, 8, 3); ctx.fillRect(6, -54, 8, 3);
+      ctx.fillStyle = '#2c3745'; ctx.beginPath(); ctx.roundRect(-10, -27, 20, 17, 5); ctx.fill(); ctx.restore();
+    });
+  }
+
+  private drawHero(g: Phaser.GameObjects.Graphics) {
+    const moving = Math.abs(this.player.vx) > 0 && this.player.grounded;
+    let frame = 'bean-idle-0';
+    if (this.jumpAnticipationTimer > 0 && this.player.grounded) frame = 'bean-jump-0';
+    else if (!this.player.grounded) frame = this.player.vy < -320 ? 'bean-jump-1' : this.player.vy < 120 ? 'bean-jump-2' : 'bean-jump-3';
+    else if (this.landingTimer > 0) frame = 'bean-jump-0';
+    else if (moving) frame = `bean-walk-${Math.floor((this.heroGait % 1) * 6)}`;
+    else {
+      const idlePhase = this.animTime % 4;
+      if (idlePhase > 3.55) frame = 'bean-idle-2';
+      else if (idlePhase > 1.3 && idlePhase < 1.52) frame = 'bean-idle-1';
+    }
+    const squash = this.landingSquash;
+    this.heroSprite.setTexture(frame)
+      .setPosition(this.player.x, this.player.y + 6)
+      .setDisplaySize(165 * (1 + squash * 0.07), 128 * (1 - squash * 0.11))
+      .setFlipX(!this.faceRight);
+    const visibleFromHit = this.hurtTimer <= 0 || Math.floor(this.animTime * 18) % 2 === 0;
+    const visibleFromCloak = this.invisibilityTimer <= 0 || Math.floor(this.animTime * 12) % 2 === 0;
+    this.heroSprite.setVisible(visibleFromHit && visibleFromCloak);
+  }
+
+  private drawCrate(g: Phaser.GameObjects.Graphics, x: number, y: number, s: number) {
+    g.fillStyle(0x7b370d, 1); g.fillRoundedRect(x, y, s, s, 5); g.fillStyle(0xc97a24, 1); g.fillRect(x + 6, y + 6, s - 12, s - 12);
+    g.lineStyle(9, 0x874312, 1); g.lineBetween(x + 8, y + 8, x + s - 8, y + s - 8); g.lineBetween(x + s - 8, y + 8, x + 8, y + s - 8);
+    g.lineStyle(3, 0xe5a34b, 1); g.strokeRect(x + 5, y + 5, s - 10, s - 10);
+  }
+
+  private drawChest(g: Phaser.GameObjects.Graphics, x: number, y: number) {
+    g.fillStyle(0x643007, 1); g.fillRoundedRect(x - 48, y - 25, 96, 59, 12); g.fillStyle(0xeaa328, 1); g.fillRoundedRect(x - 43, y - 21, 86, 50, 10);
+    g.fillStyle(0x9c4c0d, 1); g.fillRoundedRect(x - 47, y - 39, 94, 29, 15); g.fillStyle(0xf4bb35, 1); g.fillRoundedRect(x - 40, y - 35, 80, 24, 12);
+    g.fillStyle(0xffe66b, 1); g.fillRoundedRect(x - 6, y - 17, 13, 27, 4); g.fillCircle(x, y + 4, 4);
+    g.lineStyle(4, 0xffda5b, 1); g.strokeRoundedRect(x - 48, y - 25, 96, 59, 12);
+  }
+
+  private drawWarningSign(g: Phaser.GameObjects.Graphics, x: number, y: number) {
+    g.fillStyle(0x603511, 1); g.fillRoundedRect(x + 61, y + 26, 16, 190, 5);
+    g.fillStyle(0x7f4218, 1); g.fillRoundedRect(x, y, 198, 154, 12);
+    g.fillStyle(0xc27a32, 1); g.fillRoundedRect(x + 7, y + 7, 184, 140, 9);
+    g.lineStyle(4, 0x5d3015, 1); g.strokeRoundedRect(x + 2, y + 2, 194, 150, 10);
+    g.fillStyle(0xe9b450, 1); g.fillCircle(x + 15, y + 15, 4); g.fillCircle(x + 183, y + 15, 4);
+  }
+
+  private drawBarrel(g: Phaser.GameObjects.Graphics, x: number, y: number) {
+    g.fillStyle(0x552608, 1); g.fillEllipse(x, y + 46, 82, 112);
+    g.fillStyle(0x9f541a, 1); g.fillEllipse(x, y + 44, 70, 105);
+    g.fillStyle(0xc1782d, 1); g.fillEllipse(x - 8, y + 42, 29, 88);
+    g.fillStyle(0x543a31, 1); g.fillRoundedRect(x - 43, y + 16, 86, 15, 7); g.fillRoundedRect(x - 43, y + 77, 86, 15, 7);
+    g.lineStyle(4, 0xd5a259, 1); g.strokeEllipse(x, y + 44, 70, 105);
+  }
+
+  private getSpikePhase(hazard: SpikeHazard) {
+    return (this.animTime + hazard.phaseOffset) % 4.5;
+  }
+
+  private getSpikeRise(hazard: SpikeHazard) {
+    const phase = this.getSpikePhase(hazard);
+    if (phase < 2.5) return 1;
+    if (phase < 2.8) return 1 - (phase - 2.5) / 0.3;
+    if (phase < 4.15) return 0;
+    return Phaser.Math.Clamp((phase - 4.15) / 0.35, 0, 1);
+  }
+
+  private isSpikeHazardActive(hazard: SpikeHazard) {
+    const phase = this.getSpikePhase(hazard);
+    return phase < 2.5 || this.getSpikeRise(hazard) >= 0.82;
+  }
+
+  private updateSpikeVisual(sprite: Phaser.GameObjects.Image, hazard: SpikeHazard) {
+    const phase = this.getSpikePhase(hazard);
+    const rise = this.getSpikeRise(hazard);
+    const displayHeight = Math.max(1, 130 * rise);
+    const warning = phase >= 3.65 && phase < 4.15;
+    sprite
+      .setDisplaySize(148, displayHeight)
+      .setPosition(hazard.x, hazard.surfaceY)
+      .setAlpha(rise < 0.035 ? 0 : warning ? 0.72 + (Math.sin(this.animTime * 28) + 1) * 0.14 : 1);
+    if (warning) sprite.setTint(0xff5048);
+    else sprite.clearTint();
+  }
+
+  private getLaserMode(gate: LaserGate): 'warning' | 'active' | 'cooldown' {
+    const phase = (this.animTime + gate.phaseOffset) % 5.4;
+    if (phase < 1.3) return 'warning';
+    if (phase < 3.4) return 'active';
+    return 'cooldown';
+  }
+
+  private updateLaserPosts(gateIndex: number, mode: 'warning' | 'active' | 'cooldown') {
+    const pulse = (Math.sin(this.animTime * 22) + 1) / 2;
+    for (const post of this.laserPostSprites[gateIndex] ?? []) {
+      const tint = mode === 'warning' ? 0xffbc55 : mode === 'active' ? 0xffffff : 0x778393;
+      const alpha = mode === 'warning' ? 0.4 + pulse * 0.5 : mode === 'active' ? 0.92 + pulse * 0.08 : 0.38;
+      post
+        .setPosition(post.x, LASER_POST_Y)
+        .setDisplaySize(62, 48)
+        .setAlpha(alpha)
+        .setTint(tint);
+    }
+  }
+
+  private getChestFrame() {
+    if (!this.chestOpened || this.chestAnimTimer < 0.16) return 0;
+    if (this.chestAnimTimer < 0.4) return 1;
+    if (this.chestAnimTimer < 0.72) return 2;
+    return 3;
+  }
+
+  private drawLaser(g: Phaser.GameObjects.Graphics, gate: LaserGate, mode: 'warning' | 'active' | 'cooldown') {
+    const beamLeft = gate.leftPostX + LASER_EMITTER_X_OFFSET;
+    const beamRight = gate.rightPostX - LASER_EMITTER_X_OFFSET;
+    if (mode === 'warning') {
+      const pulse = (Math.sin(this.animTime * 12) + 1) / 2;
+      g.lineStyle(14, 0xffad3d, 0.09 + pulse * 0.1); g.lineBetween(beamLeft, LASER_Y, beamRight, LASER_Y);
+      g.lineStyle(3, 0xffd47a, 0.62 + pulse * 0.35); g.lineBetween(beamLeft, LASER_Y, beamRight, LASER_Y);
+      for (let x = beamLeft + 10; x < beamRight; x += 26) {
+        g.fillStyle(0xfff0a6, 0.65 + pulse * 0.3); g.fillCircle(x, LASER_Y, 2.4);
+      }
+      return;
+    }
+    if (mode === 'active') {
+      const pulse = (Math.sin(this.animTime * 22) + 1) / 2;
+      g.lineStyle(20, 0xff1938, 0.16 + pulse * 0.12); g.lineBetween(beamLeft, LASER_Y, beamRight, LASER_Y);
+      g.lineStyle(8, 0xff263e, 0.78 + pulse * 0.22); g.lineBetween(beamLeft, LASER_Y, beamRight, LASER_Y);
+      g.lineStyle(2, 0xffdbe1, 0.85 + pulse * 0.15); g.lineBetween(beamLeft, LASER_Y, beamRight, LASER_Y);
+      g.fillStyle(0xff4752, 0.72); g.fillCircle(beamLeft, LASER_Y, 4); g.fillCircle(beamRight, LASER_Y, 4);
+      g.fillStyle(0xffe4e7, 0.96); g.fillCircle(beamLeft, LASER_Y, 1.8); g.fillCircle(beamRight, LASER_Y, 1.8);
+    }
+  }
+
+  private drawHud(_paused: boolean) {
+    const g = this.hud;
+    g.clear();
+    const viewWidth = this.scale.width / this.cameras.main.zoomX;
+    const viewHeight = this.scale.height / this.cameras.main.zoomY;
+    const extraWidth = Math.max(0, viewWidth - W);
+    const ensureText = (key: string, x: number, y: number, style: any) => {
+      const owner = this as any;
+      if (!owner[key]) owner[key] = this.add.text(x, y, '', style).setDepth(9).setScrollFactor(0);
+      return (owner[key] as Phaser.GameObjects.Text).setPosition(x, y);
+    };
+    const labelStyle = { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.8, stroke: '#09141c', strokeThickness: 3, shadow: { color: '#07121a', blur: 6, fill: true, offsetX: 1, offsetY: 2 } };
+    const valueStyle = { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '26px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 4, shadow: { color: '#07121a', blur: 7, fill: true, offsetX: 1, offsetY: 2 } };
+    // Floating instrument readouts sit directly over the scene, without a shared rail.
+
+    // Score
+    g.fillStyle(0xe7b858, 1); g.fillCircle(67, 65, 19);
+    g.lineStyle(1.5, 0xffedbd, 0.9); g.strokeCircle(67, 65, 15);
+    g.fillStyle(0xffedbd, 1); g.fillEllipse(62, 59, 7, 12);
+    ensureText('scoreLabel', 96, 39, labelStyle).setText('SCORE');
+    ensureText('scoreText', 96, 57, valueStyle).setText(String(this.score).padStart(5, '0'));
+
+    // Timer
+    g.fillStyle(this.timeLeft <= 15 ? 0xff7180 : 0x75d7bd, 1); g.fillCircle(319, 63, 16);
+    g.lineStyle(2.5, 0x10202b, 1); g.strokeCircle(319, 63, 12);
+    g.lineStyle(2.5, 0x10202b, 1); g.lineBetween(319, 63, 319, 55); g.lineBetween(319, 63, 326, 67);
+    ensureText('timerLabel', 349, 39, labelStyle).setText('TIME LEFT');
+    const timerText = ensureText('timerText', 349, 55, { ...valueStyle, fontSize: '29px' });
+    timerText.setText(`${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
+    timerText.setColor(this.timeLeft <= 15 ? '#ff707c' : '#ffffff');
+    g.fillStyle(0x10252a, 0.72); g.fillRoundedRect(349, 91, 144, 3, 2);
+    g.fillStyle(this.timeLeft <= 15 ? 0xff7180 : 0x75d7bd, 1);
+    g.fillRoundedRect(349, 91, 144 * Phaser.Math.Clamp(this.timeLeft / RUN_TIME_SECONDS, 0, 1), 4, 2);
+
+    // Lives
+    ensureText('livesLabel', 544, 39, labelStyle).setText('LIVES');
+    for (let i = 0; i < 4; i++) {
+      const x = 644 + i * 27, y = 69;
+      g.fillStyle(i < this.lives ? 0xff4e6d : 0x485b78, 1);
+      g.fillCircle(x - 5, y - 3, 6); g.fillCircle(x + 5, y - 3, 6); g.fillTriangle(x - 11, y, x + 11, y, x, y + 13);
+    }
+    ensureText('livesCount', 746, 57, { ...labelStyle, fontSize: '14px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives} / 4`);
+
+    // Bean coin count and collection progress
+    g.fillStyle(0xe7b858, 1); g.fillEllipse(822, 65, 17, 22);
+    g.lineStyle(1.2, 0xffedbd, 0.9); g.strokeEllipse(822, 65, 13, 17);
+    g.fillStyle(0xffedbd, 1); g.fillEllipse(818, 60, 5, 11);
+    ensureText('coinsLabel', 848, 39, labelStyle).setText('BEAN COINS');
+    const collected = this.coins.filter(c => c.taken).length;
+    ensureText('coinsText', 848, 59, { ...valueStyle, fontSize: '21px' }).setText(`${collected} / ${this.coins.length}`);
+    g.fillStyle(0x10252a, 0.72); g.fillRoundedRect(940, 62, 112, 5, 3);
+    g.fillStyle(0xe7b858, 1); g.fillRoundedRect(940, 62, 112 * collected / this.coins.length, 8, 4);
+
+    // Route progress
+    ensureText('routeLabel', 1108 + extraWidth, 39, labelStyle).setText(`LEVEL ${this.levelIndex + 1} / 3`);
+    ensureText('routeValue', 1108 + extraWidth, 59, { ...valueStyle, fontSize: '17px', color: '#fff1b2' }).setText(LEVEL_NAMES[Math.max(0, this.levelIndex)]);
+    g.fillStyle(0x10252a, 0.72); g.fillRoundedRect(1261 + extraWidth, 62, 130, 5, 3);
+    g.fillStyle(0x75d7bd, 1); g.fillRoundedRect(1261 + extraWidth, 62, 130 * Phaser.Math.Clamp(this.player.x / this.courseWidth, 0, 1), 8, 4);
+
+    // Individual gadget controls use the same refined language as pause and settings.
+    const compactHud = viewWidth < 1100;
+    const powerupXs = compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
+    const powerups = [
+      { x: powerupXs[0], title: 'SPEED', color: 0xffcf22, status: this.speedTimer > 0 ? `${Math.ceil(this.speedTimer)}s` : 'READY' },
+      { x: powerupXs[1], title: 'CLOAK', color: 0x88e9ff, status: this.invisibilityTimer > 0 ? `${Math.ceil(this.invisibilityTimer)}s` : 'READY' },
+      { x: powerupXs[2], title: 'MAGNET', color: 0xff3b8b, status: this.magnetTimer > 0 ? `${Math.ceil(this.magnetTimer)}s` : 'READY' },
+      { x: powerupXs[3], title: 'EXTRA LIFE', color: this.extraLifeAvailable ? 0xff536d : 0x65708a, status: this.extraLifeAvailable ? 'READY' : 'USED' },
+    ];
+    const cardY = viewHeight - 102;
+    for (const [i, power] of powerups.entries()) {
+      const activePowerup = i === 0 ? this.speedTimer > 0 : i === 1 ? this.invisibilityTimer > 0 : i === 2 ? this.magnetTimer > 0 : this.extraLifeAvailable;
+      const pulse = (Math.sin(this.animTime * (activePowerup ? 8 : 3) + i * 1.4) + 1) / 2;
+      const iconScale = 1 + pulse * (activePowerup ? 0.075 : 0.025);
+      const hovered = this.gadgetHover[i];
+      const cardWidth = compactHud ? 112 : 132, cardHeight = 86, controlX = power.x;
+      const cardTop = cardY + 2;
+      this.powerupZones[i]?.setPosition(controlX, cardTop + cardHeight / 2).setSize(cardWidth + 8, cardHeight + 12);
+      const cardLit = activePowerup || hovered;
+      g.fillStyle(0x041a3d, hovered ? 0.84 : 0.72); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
+      g.fillStyle(cardLit ? 0x1477d4 : 0x0a4c9b, 0.98); g.fillRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
+      g.fillStyle(0xffffff, cardLit ? 0.16 : 0.1); g.fillRoundedRect(controlX - cardWidth / 2 + 5, cardTop + 4, cardWidth - 10, 7, 4);
+      g.lineStyle(cardLit ? 2.2 : 1.7, cardLit ? power.color : 0xe0bd66, cardLit ? (hovered ? 1 : 0.86 + pulse * 0.14) : 0.8);
+      g.strokeRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
+      g.lineStyle(1, 0xffffff, hovered ? 0.3 : 0.18); g.lineBetween(controlX - 34, cardTop + 5, controlX + 34, cardTop + 5);
+      g.fillStyle(power.color, activePowerup ? 0.94 : 0.58); g.fillRoundedRect(controlX - 42, cardTop + cardHeight - 4, 84, 2.5, 2);
+      this.powerupSprites[i]
+        .setPosition(controlX - 32, cardTop + 37 + Math.sin(this.animTime * 3 + i) * 1.5)
+        .setDisplaySize(39 * iconScale, 39 * iconScale)
+        .setDepth(9)
+        .setVisible(true)
+        .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
+      g.fillStyle(power.color, activePowerup ? 0.95 : 0.55); g.fillCircle(controlX - 32, cardTop + 67, 2.3);
+      g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 43, cardTop + 64, 12);
+      g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 43, cardTop + 64, 12);
+      if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x - 7, cardY + 24, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#d2d9d8', letterSpacing: 1.05, stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 24).setText(power.title);
+      if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x - 7, cardY + 43, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff8e8', stroke: '#09141c', strokeThickness: 3 }).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(controlX - 7, cardY + 43).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff');
+      if (!(this as any).powerupKeys) (this as any).powerupKeys = powerups.map((_, key) => this.add.text(powerups[key].x + 43, cardY + 66, String(key + 1), { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff4d6', stroke: '#06121b', strokeThickness: 2 }).setOrigin(0.5).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(controlX + 43, cardY + 66);
+    }
+
+    const endState = this.state === 'won' || this.state === 'lost';
+    const modalOpen = endState;
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.settingsOpen);
+    this.settingsMenu?.classList.toggle('is-visible', this.settingsOpen);
+    const modal = this.modalArt;
+    modal.clear().setVisible(modalOpen);
+    for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue']) {
+      const item = (this as any)[key] as Phaser.GameObjects.Text | undefined;
+      item?.setVisible(!modalOpen);
+    }
+    for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
+      ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(!modalOpen));
+    }
+    this.powerupSprites.forEach(sprite => sprite.setVisible(!modalOpen));
+    if (endState) {
+      modal.fillStyle(0x020a18, 0.76); modal.fillRect(0, 0, viewWidth, viewHeight);
+      const settings = false;
+      const panelW = 600;
+      const panelH = 360;
+      const panelX = viewWidth / 2 - panelW / 2;
+      const panelY = viewHeight / 2 - panelH / 2;
+      modal.fillStyle(0x04122d, 0.72); modal.fillRoundedRect(panelX + 7, panelY + 9, panelW, panelH, 22);
+      modal.fillStyle(0x063b7e, 0.99); modal.fillRoundedRect(panelX, panelY, panelW, panelH, 22);
+      modal.lineStyle(3, 0x102d61, 1); modal.strokeRoundedRect(panelX, panelY, panelW, panelH, 22);
+      modal.lineStyle(1.2, 0xffd85e, 0.95); modal.strokeRoundedRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8, 19);
+      modal.fillStyle(0x1478d3, 1); modal.fillRoundedRect(panelX + 4, panelY + 4, panelW - 8, 86, 19);
+      modal.fillStyle(0xffdf64, 1); modal.fillRoundedRect(panelX + 30, panelY + 25, 6, 42, 3);
+      let title = 'PAUSED';
+      let body = 'Your heist is on hold.';
+      if (settings) { title = 'SETTINGS'; body = ''; }
+      else if (this.state === 'won') {
+        const collected = this.coins.filter(coin => coin.taken).length;
+        const raidReward = this.raidBonusAwarded ? 'RAID BONUS +500' : `BONUS AT ${this.raidBonusTarget} BEANS`;
+        title = `LEVEL ${this.levelIndex + 1} COMPLETE`;
+        body = `${collected} / ${this.coins.length} beans  |  ${raidReward}  |  Score ${this.score}`;
+      }
+      else if (this.state === 'lost') { title = 'HEIST OVER'; body = 'Press ENTER or R to start another run.'; }
+      ensureText('modalTitle', viewWidth / 2, panelY + 29, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#fff8e8', align: 'center', letterSpacing: 1 }).setDepth(13).setOrigin(0.5).setText(title).setVisible(true);
+      ensureText('modalBody', viewWidth / 2, panelY + 113, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '17px', color: '#c3d3d6', align: 'center' }).setDepth(13).setOrigin(0.5).setText(body).setVisible(true);
+      if (settings) {
+        const rows = [
+          ['MOVE', 'A / D   or   LEFT / RIGHT'],
+          ['JUMP', 'W   /   SPACE   /   UP'],
+          ['POWER-UPS', 'KEYS   1   TO   4'],
+          ['SOUND', `M  OR  TAP  ·  ${this.soundEnabled ? 'ON' : 'OFF'}`],
+        ];
+        for (let i = 0; i < rows.length; i++) {
+          const rowY = panelY + 150 + i * 50;
+          modal.fillStyle(0x082e63, 1); modal.fillRoundedRect(panelX + 86, rowY + 2, panelW - 172, 46, 11);
+          modal.fillStyle(0x0e579f, 1); modal.fillRoundedRect(panelX + 86, rowY, panelW - 172, 46, 11);
+          modal.lineStyle(1.4, 0xa9d8ff, 0.48); modal.strokeRoundedRect(panelX + 86, rowY, panelW - 172, 46, 11);
+          if (!(this as any).settingRows) (this as any).settingRows = rows.map((_, row) => ({
+            label: this.add.text(panelX + 112, panelY + 150 + row * 50 + 12, '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#d6b972', letterSpacing: 1 }).setDepth(13).setScrollFactor(0),
+            value: this.add.text(panelX + 335, panelY + 150 + row * 50 + 10, '', { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#fff8e8' }).setDepth(13).setScrollFactor(0),
+          }));
+          const pair = ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[])[i];
+          pair.label.setPosition(panelX + 112, panelY + 150 + i * 50 + 12).setText(rows[i][0]).setVisible(true);
+          pair.value.setPosition(panelX + 335, panelY + 150 + i * 50 + 10).setText(rows[i][1]).setVisible(true);
+        }
+      }
+      if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { if (!settings) { row.label.setVisible(false); row.value.setVisible(false); } });
+      const buttonY = viewHeight / 2 + 142;
+      modal.fillStyle(0x8a4c0d, 1); modal.fillRoundedRect(viewWidth / 2 - 135, buttonY - 23, 270, 54, 15);
+      modal.fillStyle(0xffcf32, 1); modal.fillRoundedRect(viewWidth / 2 - 135, buttonY - 27, 270, 54, 15);
+      modal.lineStyle(2, 0xfff1a5, 1); modal.strokeRoundedRect(viewWidth / 2 - 135, buttonY - 27, 270, 54, 15);
+      const buttonText = this.state === 'won' ? 'CHOOSE NEXT LEVEL' : endState ? 'RETRY LEVEL' : settings ? 'RESUME GAME' : 'RESUME GAME';
+      ensureText('modalButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#173766', align: 'center', letterSpacing: 0.7 }).setDepth(13).setOrigin(0.5).setText(buttonText).setVisible(true);
+    } else {
+      for (const key of ['modalTitle', 'modalBody', 'modalButtonText']) ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
+      if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { row.label.setVisible(false); row.value.setVisible(false); });
+    }
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: window.innerWidth,
+  height: window.innerHeight,
+  resolution: Math.min(window.devicePixelRatio || 1, 1.5),
+  backgroundColor: '#102744',
+  transparent: true,
+  scale: { mode: Phaser.Scale.RESIZE },
+  scene: [HeistScene],
+  render: { antialias: true, pixelArt: false },
+});

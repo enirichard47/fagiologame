@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1664" height="934" viewBox="0 0 1664 934">
+<defs>
+ <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#0875e9"/><stop offset=".58" stop-color="#52c9f5"/><stop offset="1" stop-color="#b5eeff"/></linearGradient>
+ <linearGradient id="castle" x2="0" y2="1"><stop stop-color="#c5d7f2"/><stop offset="1" stop-color="#657eae"/></linearGradient>
+ <linearGradient id="hill" x2="0" y2="1"><stop stop-color="#5ed43d"/><stop offset="1" stop-color="#158a3e"/></linearGradient>
+ <filter id="soft"><feGaussianBlur stdDeviation="1.5"/></filter>
+</defs>
+<rect width="1664" height="934" fill="url(#sky)"/>
+<!-- distant cloud banks -->
+<g fill="#fff" opacity=".72"><path d="M0 194q27-40 66-10 27-53 70-18 35-35 76 3 51-15 69 27H0z"/><path d="M370 159q28-46 72-15 22-60 74-26 36-37 79 3 44-11 65 35H370z"/><path d="M936 206q30-45 75-14 25-55 74-22 38-37 80 7 48-17 73 29H936z"/><path d="M1390 177q30-44 72-14 27-55 72-22 41-37 83 6 39-13 58 30h-285z"/></g>
+<!-- soft distant castle towers -->
+<g fill="#526fa6" opacity=".48" filter="url(#soft)"><path d="M650 550V315h45v-52h74v52h36v235z"/><path d="M780 550V340h80v-75h70v75h44v210z"/><path d="M953 550V300h56v-47h86v47h44v250z"/><path d="M1110 550V342h69v-67h72v67h48v208z"/><path d="M1262 550V278h72v-77h74v77h55v272z"/></g>
+<g fill="url(#castle)" stroke="#526b99" stroke-width="7">
+ <path d="M641 623V390h88v-79h83v79h91v233z"/><path d="M855 623V353h73v-93h89v93h81v270z"/><path d="M1095 623V376h75v-82h91v82h83v247z"/><path d="M1286 623V340h86v-119h105v119h88v283z"/>
+ <path d="M626 403h118v-26l-59-109-59 109z" fill="#db5d63"/><path d="M846 366h90v-27l-45-103-45 103z" fill="#e05961"/><path d="M1085 390h94v-28l-47-104-47 104z" fill="#dd6067"/><path d="M1276 354h106v-30l-53-118-53 118z" fill="#cf5665"/><path d="M1465 354h104v-30l-52-115-52 115z" fill="#d45d68"/>
+</g>
+<g fill="#ffdc91" opacity=".9"><path d="M672 420h22v40h-22zM756 420h23v40h-23zM884 388h22v42h-22zM978 385h23v43h-23zM1124 414h23v40h-23zM1200 414h23v40h-23zM1316 381h25v45h-25zM1419 381h24v45h-24zM1491 396h25v46h-25z"/></g>
+<!-- flags -->
+<g stroke="#4f2e47" stroke-width="5" fill="#f24858"><path d="M703 274v-83"/><path d="M947 239v-79"/><path d="M1133 271v-83"/><path d="M1366 202v-86"/><path d="M1507 215v-75"/><path d="M703 192q26-11 48 2l-5 19q-21-13-43-1zM947 158q22-12 45 1l-5 20q-21-12-40 0zM1133 186q22-12 43 2l-5 19q-20-12-38 0zM1366 114q23-12 47 2l-4 20q-22-11-43 1zM1507 138q19-10 39 1l-5 17q-17-10-34 0z"/></g>
+<!-- emerald hill line and forest framing -->
+<path d="M0 681q142-101 285-2 124-127 276-26 129-130 264-2 142-112 270-4 153-129 304-1 144-114 265-8v296H0z" fill="url(#hill)"/>
+<g fill="#238b3a"><path d="M0 641q44-77 87 0l-13-61 31 47 22-75 17 77 46-60-18 75h75v65H0z"/><path d="M1430 632q34-79 71 0l-11-58 29 42 18-73 18 80 42-56-15 69h82v75h-234z"/><path d="M1550 562q32-78 67 0l-11-49 29 40 15-61 16 70 34-45-13 65h33v86h-170z"/></g>
+<g fill="#70dd49" opacity=".85"><circle cx="50" cy="620" r="16"/><circle cx="98" cy="606" r="19"/><circle cx="1580" cy="605" r="22"/><circle cx="1623" cy="623" r="16"/><circle cx="1494" cy="631" r="18"/></g>
+</svg>
