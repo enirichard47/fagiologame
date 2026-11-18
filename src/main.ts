@@ -15,32 +15,37 @@ const LEVEL_STARTS = [0, 0, 0] as const;
 const LEVEL_ENDS = [5000, 5000, 5000] as const;
 const LEVEL_PLATFORM_Y_OFFSETS = [
   [0, -12, 20, -5, 0, -30, 10, 0, 16, -10, 0, 10, -10, 0],
-  [0, -45, -28, -5, 0, -30, -25, 0, -38, -18, 0, -45, -25, 0],
-  [0, 10, -15, 20, 0, 10, -20, 0, 12, -12, 0, 8, -12, 0],
+  // Inner Ramparts: high stair climbs separated by exposed floor drops.
+  [0, -38, -72, -18, 0, -48, -85, 0, -42, -84, 0, -42, -88, 0],
+  // Royal Keep: broken bridges with varied rises and falls between towers.
+  [0, -15, -50, 5, 0, 0, -45, 0, 0, -50, 0, 15, -35, 0],
 ] as const;
 const LEVEL_PLATFORM_X_OFFSETS = [
   [0, -30, 30, -25, 0, 40, -35, 0, 25, -30, 0, -35, 30, 0],
-  [0, 55, -45, 50, 0, -60, 50, 0, 50, -45, 0, -55, 55, 0],
-  [0, -50, 50, -55, 0, 55, -50, 0, -50, 55, 0, 50, -55, 0],
+  [0, 25, -15, 40, 0, -20, 30, 0, 20, -10, 0, 25, 10, 0],
+  [0, -35, 35, -45, 0, 45, -35, 0, -55, 55, 0, -45, 35, 0],
 ] as const;
 const LEVEL_PLATFORM_WIDTH_OFFSETS = [
   [0, -35, 30, -20, 0, 40, -35, 0, 35, -30, 0, 35, -30, 0],
-  [0, -20, 50, -45, 0, 60, -25, 0, -35, 50, 0, -40, 40, 0],
-  [0, 40, -30, 30, 0, -25, 55, 0, -40, 45, 0, -30, 30, 0],
+  [0, -30, -40, 15, 0, -10, -15, 0, 10, 0, 0, -30, -25, 0],
+  [0, 35, -25, 30, 0, -10, 40, 0, 35, -45, 0, 25, -30, 0],
 ] as const;
 const LEVEL_GUARD_X_OFFSETS = [
   [0, 0, 0, 0, 0, 0],
-  [35, -45, 55, -35, 45, -60],
-  [-45, 55, -50, 60, -40, 70],
+  [20, -25, 25, -30, 25, -35],
+  [-35, 45, -35, 25, -40, 60],
 ] as const;
 const LEVEL_SPIKE_X_OFFSETS = [
   [0, 0, 0, 0],
-  [45, -55, 50, -45],
-  [-50, 55, -45, 60],
+  [45, -15, 50, 10],
+  [-50, 55, -15, 60],
 ] as const;
+const LEVEL_SPIKE_PHASE_OFFSETS = [0, 0.15, 0.2] as const;
 const LEVEL_LASER_X_OFFSETS = [[0, 0, 0], [80, -50, 110], [-30, 95, -105]] as const;
 const LEVEL_CRATE_X_OFFSETS = [[0, 0, 0, 0], [80, -25, -50, 70], [-60, 25, 50, -80]] as const;
-const LEVEL_BARREL_X_OFFSETS = [0, 90, -95] as const;
+const LEVEL_BARREL_X_OFFSETS = [0, 120, -120] as const;
+const LEVEL_GUARD_PATROL_SPEEDS = [84, 96, 108] as const;
+const LEVEL_GUARD_CHASE_SPEEDS = [155, 170, 185] as const;
 const LASER_POST_Y = FLOOR;
 const LASER_POST_BASE = 413 / 448;
 const LASER_EMITTER_SOURCE = { x: 350, y: 104 };
@@ -1066,6 +1071,7 @@ class HeistScene extends Phaser.Scene {
         ...hazard,
         x: hazardX - sourceStart + platformXShiftAt(hazard.x, hazard.surfaceY),
         surfaceY: hazard.surfaceY + platformShiftAt(hazard.x, hazard.surfaceY),
+        phaseOffset: hazard.phaseOffset + LEVEL_SPIKE_PHASE_OFFSETS[this.levelIndex],
       };
     });
     this.laserGates = this.sourceLaserGates
@@ -1520,7 +1526,7 @@ class HeistScene extends Phaser.Scene {
       if (guard.mode === 'patrol') {
         if (guard.x <= guard.minX + 3) guard.direction = 1;
         if (guard.x >= guard.maxX - 3) guard.direction = -1;
-        this.moveGuard(guard, guard.direction * 84, 420, dt);
+        this.moveGuard(guard, guard.direction * LEVEL_GUARD_PATROL_SPEEDS[this.levelIndex], 420, dt);
         guard.x = Phaser.Math.Clamp(guard.x, guard.minX, guard.maxX);
         if (canSeePlayer && distance < 345) {
           guard.mode = 'alert'; guard.timer = 0.9; guard.lastSeenX = this.player.x; guard.velocity = 0;
@@ -1540,7 +1546,7 @@ class HeistScene extends Phaser.Scene {
           const targetDirection = dx < 0 ? -1 : 1;
           guard.direction = targetDirection;
           if ((targetDirection < 0 && guard.x <= guard.minX + 3) || (targetDirection > 0 && guard.x >= guard.maxX - 3)) guard.direction = -targetDirection;
-          this.moveGuard(guard, guard.direction * 155, 560, dt);
+          this.moveGuard(guard, guard.direction * LEVEL_GUARD_CHASE_SPEEDS[this.levelIndex], 560, dt);
           guard.x = Phaser.Math.Clamp(guard.x, guard.minX, guard.maxX);
           if (distance < 54 && this.hurtTimer <= 0) {
             this.takeHit(); guard.mode = 'stunned'; guard.timer = 1.25;
@@ -2282,5 +2288,5 @@ gameHost.__fagioloHeistGame = new Phaser.Game({
   transparent: true,
   scale: { mode: Phaser.Scale.RESIZE },
   scene: [HeistScene],
-  render: { antialias: true, pixelArt: false, resolution: Math.min(window.devicePixelRatio || 1, 1.5) },
+  render: { antialias: true, pixelArt: false },
 });
