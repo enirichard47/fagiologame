@@ -1,9 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito+Sans:wght@400;600;700;800;900&display=swap');
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { width: 100vw; height: 100dvh; background: #071a42; font-family: "Trebuchet MS", sans-serif; }
-#game { position: fixed; inset: 0; width: 100vw; height: 100dvh; overflow: hidden; background: #102744; }
-#game canvas { position: absolute; z-index: 2; inset: 0; display: block; width: 100vw !important; height: 100dvh !important; max-width: none; max-height: none; box-shadow: none; }
+body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet MS", sans-serif; }
+#game { position: fixed; inset: 0; width: 100%; height: 100dvh; overflow: hidden; background: #102744; }
+/* Keep Phaser's CSS display size tied to its measured parent. Forcing 100vw/100dvh
+   can make mobile browsers resample the canvas by a fractional pixel. */
+#game canvas { position: absolute; z-index: 2; inset: 0; display: block; width: 100% !important; height: 100% !important; max-width: none; max-height: none; box-shadow: none; }
 .level-menu { position: absolute; z-index: 10; inset: 0; display: none; place-items: center; padding: 24px; color: #fff4d4; background: linear-gradient(115deg, rgba(5,15,24,.78), rgba(5,15,24,.35)); font-family: Arial, sans-serif; }
 .level-menu.is-visible { display: grid; }
 .level-panel { width: min(100%, 980px); padding: clamp(24px, 5vw, 58px); border: 1px solid rgba(227,190,111,.72); border-radius: 28px; background: linear-gradient(145deg, rgba(10,27,37,.96), rgba(15,39,46,.94)); box-shadow: 0 24px 80px rgba(0,0,0,.45); }

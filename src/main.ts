@@ -1478,7 +1478,7 @@ class HeistScene extends Phaser.Scene {
     // stretching the level or cropping the route in front of the player.
     const shortLandscapeTouch = this.isShortLandscapeTouch(width, height);
     const zoomX = shortLandscapeTouch
-      ? Math.min(1, width / 1280, height / 700)
+      ? Math.min(0.9, Math.min(width / 1280, height / 700) * 1.25)
       : Math.min(1, width / W, height / H);
     const zoomY = zoomX;
     const viewWidth = width / zoomX;
@@ -1827,9 +1827,11 @@ class HeistScene extends Phaser.Scene {
         this.tweens.add({ targets: popup, y: popup.y - 46, alpha: 0, duration: 620, ease: 'Cubic.Out', onComplete: () => popup.destroy() });
       }
     }
+    const coinScale = this.isShortLandscapeTouch() ? 1.15 : 1;
     this.coins.forEach((coin, i) => {
       const sprite = this.coinSprites[i];
       sprite.setVisible(!coin.taken && !coin.locked);
+      if (sprite.displayWidth !== 48 * coinScale) sprite.setDisplaySize(48 * coinScale, 36 * coinScale);
       sprite.setPosition(coin.x, coin.y + Math.sin(this.animTime * 5 + coin.x) * 4);
       sprite.setAngle(Math.sin(this.animTime * 2.2 + coin.x) * 12);
     });
@@ -2181,6 +2183,9 @@ class HeistScene extends Phaser.Scene {
   private drawGuardSprite(sprite: Phaser.GameObjects.Image, guard: GuardAgent) {
     const frame = this.getGuardFrame(guard);
     const shouldFlip = this.guardFrameFacesRight(frame) !== (guard.direction > 0);
+    const mobileScale = this.isShortLandscapeTouch() ? 1.16 : 1;
+    const displayHeight = guard.spriteHeight * mobileScale;
+    if (sprite.displayHeight !== displayHeight) sprite.setDisplaySize(guard.spriteHeight * 137 / 120 * mobileScale, displayHeight);
     sprite.setTexture(frame).setPosition(guard.x, guard.y + this.getGuardFootCorrection(frame, sprite.displayHeight)).setFlipX(shouldFlip);
     // Keep the sprite's feet on the platform; reactions are shown through pose and torch movement.
     sprite.setAngle(0);
@@ -2257,9 +2262,12 @@ class HeistScene extends Phaser.Scene {
       else if (idlePhase > 1.3 && idlePhase < 1.52) frame = 'bean-idle-1';
     }
     const squash = this.landingSquash;
+    // The aligned character sheets include transparent margins. Give Fagiolo
+    // more screen area on phone landscape without changing its proportions.
+    const mobileScale = this.isShortLandscapeTouch() ? 1.16 : 1;
     this.heroSprite.setTexture(frame)
       .setPosition(this.player.x, this.player.y + 6)
-      .setDisplaySize(165 * (1 + squash * 0.07), 128 * (1 - squash * 0.11))
+      .setDisplaySize(165 * mobileScale * (1 + squash * 0.07), 128 * mobileScale * (1 - squash * 0.11))
       .setFlipX(!this.faceRight);
     const visibleFromHit = this.hurtTimer <= 0 || Math.floor(this.animTime * 18) % 2 === 0;
     const visibleFromCloak = this.invisibilityTimer <= 0 || Math.floor(this.animTime * 12) % 2 === 0;
@@ -2408,26 +2416,26 @@ class HeistScene extends Phaser.Scene {
       const slotWidth = panelWidth / 5;
       const slotX = (index: number) => left + slotWidth * index + 8;
       const labelY = top + 6, valueY = top + 21;
-      g.fillStyle(0x061a2d, 0.84); g.fillRoundedRect(left, top, panelWidth, 50, 10);
-      g.lineStyle(1, 0xb3d4ed, 0.44); g.strokeRoundedRect(left, top, panelWidth, 50, 10);
-      ensureText('scoreLabel', slotX(0), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('SCORE');
-      ensureText('scoreText', slotX(0), valueY, { ...valueStyle, fontSize: '17px' }).setText(String(this.score).padStart(5, '0'));
-      ensureText('timerLabel', slotX(1), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.7 }).setText('TIME');
-      const timerText = ensureText('timerText', slotX(1), valueY, { ...valueStyle, fontSize: '17px' });
+      g.fillStyle(0x061a2d, 0.88); g.fillRoundedRect(left, top, panelWidth, 54, 10);
+      g.lineStyle(1.2, 0xb3d4ed, 0.55); g.strokeRoundedRect(left, top, panelWidth, 54, 10);
+      ensureText('scoreLabel', slotX(0), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.7 }).setText('SCORE');
+      ensureText('scoreText', slotX(0), valueY, { ...valueStyle, fontSize: '19px' }).setText(String(this.score).padStart(5, '0'));
+      ensureText('timerLabel', slotX(1), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.7 }).setText('TIME');
+      const timerText = ensureText('timerText', slotX(1), valueY, { ...valueStyle, fontSize: '19px' });
       timerText.setText(`${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
       timerText.setColor(this.timeLeft <= 15 ? '#ff707c' : '#ffffff');
-      ensureText('coinsLabel', slotX(2), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('BEANS');
+      ensureText('coinsLabel', slotX(2), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('BEANS');
       const collected = this.coins.filter(coin => coin.taken).length;
-      ensureText('coinsText', slotX(2), valueY, { ...valueStyle, fontSize: '16px' }).setText(`${collected}/${this.coins.length}`);
-      ensureText('livesLabel', slotX(3), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LIVES');
+      ensureText('coinsText', slotX(2), valueY, { ...valueStyle, fontSize: '18px' }).setText(`${collected}/${this.coins.length}`);
+      ensureText('livesLabel', slotX(3), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('LIVES');
       for (let i = 0; i < 4; i++) {
         const x = slotX(3) + 4 + i * 9, y = top + 35;
         g.fillStyle(i < this.lives ? 0xff4e6d : 0x485b78, 1);
         g.fillCircle(x - 2, y - 1, 2.5); g.fillCircle(x + 2, y - 1, 2.5); g.fillTriangle(x - 4.5, y, x + 4.5, y, x, y + 5);
       }
       ensureText('livesCount', slotX(3) + 45, valueY + 2, { ...labelStyle, fontSize: '10px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives}/4`);
-      ensureText('routeLabel', slotX(4), labelY, { ...labelStyle, fontSize: '8px', letterSpacing: 0.5 }).setText('LEVEL');
-      ensureText('routeValue', slotX(4), valueY, { ...valueStyle, fontSize: '15px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
+      ensureText('routeLabel', slotX(4), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('LEVEL');
+      ensureText('routeValue', slotX(4), valueY, { ...valueStyle, fontSize: '17px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
     } else {
 
     // Score
@@ -2477,7 +2485,9 @@ class HeistScene extends Phaser.Scene {
 
     // Individual gadget controls use the same refined language as pause and settings.
     const compactHud = viewWidth < 1100;
-    const gadgetSize = Phaser.Math.Clamp((viewWidth - 266) / 4, 30, 48);
+    const gadgetSize = compactTouchHud
+      ? Phaser.Math.Clamp((viewWidth - 180) / 4, 54, 62)
+      : Phaser.Math.Clamp((viewWidth - 266) / 4, 30, 48);
     const cardWidth = compactTouchHud ? gadgetSize : compactHud ? 112 : 132;
     const cardHeight = compactTouchHud ? gadgetSize : 86;
     const gadgetGap = compactTouchHud ? 8 : compactHud ? 12 : 16;
@@ -2512,7 +2522,7 @@ class HeistScene extends Phaser.Scene {
       }
       this.powerupSprites[i]
         .setPosition(uiX(controlX), uiY(cardTop + (compactTouchHud ? cardHeight * 0.42 : 24)))
-        .setDisplaySize((compactTouchHud ? Math.min(22, gadgetSize * 0.45) : 34) * iconScale * hudScale, (compactTouchHud ? Math.min(22, gadgetSize * 0.45) : 34) * iconScale * hudScale)
+        .setDisplaySize((compactTouchHud ? Math.min(30, gadgetSize * 0.52) : 34) * iconScale * hudScale, (compactTouchHud ? Math.min(30, gadgetSize * 0.52) : 34) * iconScale * hudScale)
         .setDepth(9)
         .setVisible(true)
         .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
@@ -2529,7 +2539,7 @@ class HeistScene extends Phaser.Scene {
       if (!this.powerupChargeTexts[i]) this.powerupChargeTexts[i] = this.add.text(0, 0, '', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '11px', color: '#fffdf5', stroke: '#06121b', strokeThickness: 2 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(10).setScrollFactor(0);
       const charges = i < 3 ? this.powerupCharges[i] : Number(this.extraLifeAvailable);
       this.powerupChargeTexts[i].setPosition(uiX(controlX + cardWidth / 2 - (compactTouchHud ? 8 : 14)), uiY(cardTop + (compactTouchHud ? 8 : 14)))
-        .setScale(hudScale).setFontSize(compactTouchHud ? 9 : 11).setText(String(charges)).setVisible(true);
+        .setScale(hudScale).setFontSize(compactTouchHud ? 11 : 11).setText(String(charges)).setVisible(true);
       if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x, cardY + 48, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f4f7f2', letterSpacing: 0.8, stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
       ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX), uiY(cardTop + 48)).setScale(hudScale).setText(power.title).setVisible(!compactTouchHud);
       if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x, cardY + 68, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#fffdf5', stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
