@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import './style.css';
+import { FagioloOnline, type LeaderboardEntry } from './online';
 
 const W = 1664;
 const H = 934;
@@ -46,6 +47,8 @@ const LEVEL_CRATE_X_OFFSETS = [[0, 0, 0, 0], [80, -25, -50, 70], [-60, 25, 50, -
 const LEVEL_BARREL_X_OFFSETS = [0, 120, -120] as const;
 const LEVEL_GUARD_PATROL_SPEEDS = [84, 96, 108] as const;
 const LEVEL_GUARD_CHASE_SPEEDS = [155, 170, 185] as const;
+const LEVEL_REFILL_X = [2500, 2570, 2440] as const;
+const LEVEL_EXTRA_LIFE_X = [3680, 3030, 4240] as const;
 const LASER_POST_Y = FLOOR;
 const LASER_POST_BASE = 413 / 448;
 const LASER_EMITTER_SOURCE = { x: 350, y: 104 };
@@ -77,6 +80,11 @@ type SpikeHazard = { x: number; surfaceY: number; phaseOffset: number };
 type LaserGate = { leftPostX: number; rightPostX: number; phaseOffset: number };
 
 class HeistScene extends Phaser.Scene {
+  private online = new FagioloOnline();
+  private onlineOverlay?: HTMLDivElement;
+  private onlineMode: 'signup' | 'login' = 'signup';
+  private leaderboardLevel = 1;
+  private leaderboardRunStatus = '';
   private platformSprites: Phaser.GameObjects.Image[] = [];
   private activePlatforms: (typeof platforms[number])[] = [];
   private activePlatformIndices: number[] = [];
@@ -173,10 +181,18 @@ class HeistScene extends Phaser.Scene {
   private signText!: Phaser.GameObjects.Text;
   private coinSprites: Phaser.GameObjects.Image[] = [];
   private powerupZones: Phaser.GameObjects.Zone[] = [];
+  private powerupChargeTexts: Phaser.GameObjects.Text[] = [];
+  private refillSprite?: Phaser.GameObjects.Image;
+  private extraLifePickupSprite?: Phaser.GameObjects.Image;
+  private refillPickup = { x: 2500, y: FLOOR - 42, taken: false };
+  private extraLifePickup = { x: 3680, y: FLOOR - 42, taken: false };
+  private refillChoicePending = false;
+  private refillChoiceMenu?: HTMLDivElement;
+  private powerupCharges: [number, number, number] = [1, 1, 1];
   private speedTimer = 0;
   private invisibilityTimer = 0;
   private magnetTimer = 0;
-  private extraLifeAvailable = true;
+  private extraLifeAvailable = false;
   private settingsOpen = false;
   private touchLeft = false;
   private touchRight = false;
@@ -479,6 +495,7 @@ class HeistScene extends Phaser.Scene {
       this.returnToTitle();
     });
     this.createGameOverlays();
+    this.addOnlineEntryPoints(landing, levelMenu);
     this.backgroundArt = [this.add.image(W / 2, H / 2, 'level-background')
       .setScrollFactor(0).setDepth(-10).setVisible(false)];
     for (let level = 0; level < LEVEL_NAMES.length; level++) {
@@ -526,11 +543,13 @@ class HeistScene extends Phaser.Scene {
       .setDepth(2)
       .setVisible(false));
     this.coinSprites = this.coins.map(c => this.add.image(c.x, c.y, 'bean-coin').setDisplaySize(48, 36).setDepth(2).setVisible(false));
-    this.signText = this.add.text(133, 497, 'MOVE: A/D OR ARROWS\nJUMP: W / SPACE / UP\nBEANS = SCORE\nCHEST = EXIT', { fontFamily: 'Trebuchet MS', fontSize: '15px', fontStyle: 'bold', color: '#20160f', align: 'center', lineSpacing: 4 }).setOrigin(.5).setDepth(4).setVisible(false);
+    this.refillSprite = this.add.image(this.refillPickup.x, this.refillPickup.y, 'prop-chest-0').setDisplaySize(72, 54).setDepth(3).setVisible(false);
+    this.extraLifePickupSprite = this.add.image(this.extraLifePickup.x, this.extraLifePickup.y, 'power-life').setDisplaySize(48, 48).setDepth(3).setVisible(false);
+    this.signText = this.add.text(133, 497, 'MOVE: A/D OR ARROWS\nJUMP: W / SPACE / UP\nBEANS = SCORE\nCHEST = EXIT', { fontFamily: 'Trebuchet MS', fontSize: '15px', fontStyle: 'bold', color: '#20160f', align: 'center', lineSpacing: 4 }).setResolution(this.gameplayTextResolution()).setOrigin(.5).setDepth(4).setVisible(false);
     this.levelBanner = this.add.text(W / 2, 145, '', {
       fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '28px', fontStyle: 'bold', color: '#fff2c9',
       stroke: '#10212c', strokeThickness: 7, shadow: { color: '#07111a', blur: 12, fill: true, offsetY: 3 },
-    }).setOrigin(.5).setDepth(7).setScrollFactor(0).setAlpha(0).setVisible(false);
+    }).setResolution(this.gameplayTextResolution()).setOrigin(.5).setDepth(7).setScrollFactor(0).setAlpha(0).setVisible(false);
     this.powerupZones = [105, 245, 385, 525].map((x, i) => this.add.zone(x, H - 76, 132, 108).setScrollFactor(0).setInteractive()
       .on('pointerover', () => { this.gadgetHover[i] = true; })
       .on('pointerout', () => { this.gadgetHover[i] = false; })
@@ -572,25 +591,38 @@ class HeistScene extends Phaser.Scene {
 
     const resultActions = document.createElement('div');
     resultActions.className = 'game-result-actions';
-    resultActions.innerHTML = '<button type="button" data-result="retry">RETRY LEVEL</button><button type="button" data-result="levels">RETURN TO LEVELS</button>';
+    resultActions.innerHTML = `<section class="game-report" role="dialog" aria-modal="true" aria-labelledby="game-report-title"><div class="report-topline"><span class="report-brand-mark" aria-hidden="true"><img src="/assets/bean-idle-0-aligned.png" alt=""></span><span class="report-kicker">HEIST REPORT <i></i> LEVEL <b data-report-level>1</b></span><span class="report-status" data-report-status>RUN COMPLETE</span></div><header class="report-heading"><span class="report-emblem" data-report-emblem aria-hidden="true">★</span><div><h2 id="game-report-title" data-report-title>ESCAPE COMPLETE</h2><p data-report-subtitle>Fagiolo got away with the goods.</p></div></header><div class="report-stats"><article class="report-stat report-stat-score"><span>SCORE</span><strong data-report-score>00000</strong></article><article class="report-stat"><span>BEANS</span><strong data-report-beans>00 / 00</strong></article><article class="report-stat"><span>TIME LEFT</span><strong data-report-time>00:00</strong></article><article class="report-stat"><span>LIVES</span><strong data-report-lives>0 / 4</strong></article></div><div class="report-reward"><span class="report-reward-icon" aria-hidden="true">✦</span><span><small data-report-reward-kicker>LEVEL REWARD</small><b data-report-reward>CHEST +500</b></span><span class="report-reward-extra" data-report-extra>BEAN BONUS +500</span></div><footer class="report-actions"><button class="report-primary" type="button" data-result="primary">PLAY NEXT LEVEL</button><button class="report-secondary" type="button" data-result="levels">LEVEL SELECT</button></footer><p class="report-footnote" data-report-footnote>Every bean brings you closer to the perfect escape.</p></section>`;
     mount.append(resultActions);
     this.gameResultActions = resultActions;
-    const retryButton = resultActions.querySelector<HTMLButtonElement>('[data-result="retry"]');
-    const retryFromResult = (event: Event) => {
+    const primaryButton = resultActions.querySelector<HTMLButtonElement>('[data-result="primary"]');
+    const primaryFromResult = (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.retryCurrentLevel();
+      if (this.state === 'lost' || this.state === 'timeout') this.retryCurrentLevel();
+      else if (this.state === 'won') this.startGame(this.levelIndex < 2 ? this.levelIndex + 1 : this.levelIndex);
     };
-    retryButton?.addEventListener('pointerdown', retryFromResult);
-    retryButton?.addEventListener('click', retryFromResult);
+    primaryButton?.addEventListener('click', primaryFromResult);
     const levelsButton = resultActions.querySelector<HTMLButtonElement>('[data-result="levels"]');
     const returnFromResult = (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (this.state === 'lost' || this.state === 'timeout') this.quitToLevelSelect();
+      if (this.state === 'lost' || this.state === 'timeout' || this.state === 'won') this.quitToLevelSelect();
     };
-    levelsButton?.addEventListener('pointerdown', returnFromResult);
     levelsButton?.addEventListener('click', returnFromResult);
+    resultActions.querySelector('.report-actions')?.insertAdjacentHTML('beforeend', '<button class="report-tertiary" type="button" data-result="leaderboard">LEADERBOARD</button>');
+    resultActions.querySelector('.report-footnote')?.insertAdjacentHTML('beforebegin', '<p class="report-online-status" data-report-online-status aria-live="polite"></p>');
+    resultActions.querySelector('[data-result="leaderboard"]')?.addEventListener('click', () => {
+      this.openOnlinePanel(this.state === 'won' && !this.online.user ? 'auth' : 'leaderboard');
+    });
+
+    const refillChoice = document.createElement('div');
+    refillChoice.className = 'powerup-refill-overlay';
+    refillChoice.innerHTML = `<section class="powerup-refill-panel" role="dialog" aria-modal="true" aria-labelledby="refill-choice-title"><div class="refill-heading"><h2 id="refill-choice-title">Choose your power gem</h2><p>Pick one gadget to recharge. Each can hold up to two charges.</p></div><div class="powerup-refill-options"><button class="refill-option refill-speed" type="button" data-refill="0"><span class="refill-gem"><img src="/assets/power-speed.png" alt=""></span><span class="refill-option-copy"><b>SPEED</b><small>A quick burst of momentum</small><em data-refill-count>0 / 2 CHARGES</em></span><span class="refill-add">+1</span></button><button class="refill-option refill-cloak" type="button" data-refill="1"><span class="refill-gem"><img src="/assets/power-cloak.png" alt=""></span><span class="refill-option-copy"><b>CLOAK</b><small>Slip past the guards unseen</small><em data-refill-count>0 / 2 CHARGES</em></span><span class="refill-add">+1</span></button><button class="refill-option refill-magnet" type="button" data-refill="2"><span class="refill-gem"><img src="/assets/power-magnet.png" alt=""></span><span class="refill-option-copy"><b>MAGNET</b><small>Pull nearby beans your way</small><em data-refill-count>0 / 2 CHARGES</em></span><span class="refill-add">+1</span></button></div></section>`;
+    mount.append(refillChoice);
+    this.refillChoiceMenu = refillChoice;
+    refillChoice.querySelectorAll<HTMLButtonElement>('[data-refill]').forEach(button => {
+      button.addEventListener('click', () => this.chooseRefill(Number(button.dataset.refill)));
+    });
 
     const settings = document.createElement('div');
     settings.className = 'game-settings-overlay';
@@ -681,6 +713,219 @@ class HeistScene extends Phaser.Scene {
       });
     }
     this.syncSettingsMenu();
+    this.createOnlineOverlay(mount);
+  }
+
+  private addOnlineEntryPoints(landing: HTMLDivElement, levelMenu: HTMLDivElement) {
+    const nav = landing.querySelector('.landing-nav');
+    if (nav) {
+      const actions = document.createElement('div');
+      actions.className = 'online-entry-actions';
+      actions.innerHTML = '<button type="button" class="online-entry-button" data-open-auth>Sign in</button><button type="button" class="online-entry-button online-entry-leaderboard" data-open-leaderboard>Leaderboard</button>';
+      nav.append(actions);
+    }
+    const footer = levelMenu.querySelector('.level-panel-footer');
+    if (footer) {
+      const actions = document.createElement('div');
+      actions.className = 'online-entry-actions level-online-actions';
+      actions.innerHTML = '<button type="button" class="online-entry-button" data-open-auth>Sign in</button><button type="button" class="online-entry-button online-entry-leaderboard" data-open-leaderboard>Leaderboard</button>';
+      footer.prepend(actions);
+    }
+    document.querySelectorAll<HTMLButtonElement>('[data-open-auth]').forEach(button => {
+      button.addEventListener('click', () => this.openOnlinePanel('auth'));
+    });
+    document.querySelectorAll<HTMLButtonElement>('[data-open-leaderboard]').forEach(button => {
+      button.addEventListener('click', () => this.openOnlinePanel('leaderboard'));
+    });
+    this.online.restoreSession().then(() => this.syncOnlineEntryPoints()).catch(() => this.syncOnlineEntryPoints());
+    window.addEventListener('fagiolo-auth-change', () => this.syncOnlineEntryPoints());
+  }
+
+  private createOnlineOverlay(mount: HTMLElement) {
+    const overlay = document.createElement('div');
+    overlay.className = 'online-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.innerHTML = `<section class="online-panel" role="dialog" aria-modal="true" aria-labelledby="online-title"><header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header><div class="online-auth-view" data-online-auth-view><p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p><form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Player name<input name="username" type="text" minlength="3" maxlength="18" pattern="[A-Za-z0-9_]{3,18}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Email<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your player name appears publicly on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form><div class="online-member-view" data-online-member hidden><p class="online-member-name" data-online-member-name></p><p class="online-intro">Your best completed score for each level is saved to your account.</p><button class="online-submit online-signout" type="button" data-auth-signout>SIGN OUT</button></div><p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button></div><div class="online-board-view" data-online-board-view hidden><p class="online-intro">Best completed run per player · score, beans, then fastest time.</p><div class="online-level-tabs" role="tablist" aria-label="Leaderboard level"><button type="button" data-board-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-board-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-board-level="3" aria-selected="false">LEVEL 3</button></div><div class="online-board-head"><span>RANK / PLAYER</span><span>SCORE</span><span>BEANS</span><span>TIME</span></div><ol class="online-board-list" data-board-list></ol><p class="online-notice" data-board-notice role="status" aria-live="polite"></p><button class="online-submit online-board-signin" type="button" data-board-signin>CREATE ACCOUNT / SIGN IN</button></div></section>`;
+    mount.append(overlay);
+    this.onlineOverlay = overlay;
+    const close = () => {
+      overlay.classList.remove('is-visible');
+      overlay.setAttribute('aria-hidden', 'true');
+    };
+    overlay.querySelector('.online-close')?.addEventListener('click', close);
+    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+    overlay.querySelector('[data-auth-mode-toggle]')?.addEventListener('click', () => {
+      this.onlineMode = this.onlineMode === 'signup' ? 'login' : 'signup';
+      this.renderOnlineAuth();
+    });
+    overlay.querySelector('[data-auth-form]')?.addEventListener('submit', event => { void this.submitOnlineAuth(event); });
+    overlay.querySelector('[data-auth-signout]')?.addEventListener('click', async () => {
+      await this.online.signOut();
+      this.renderOnlineAuth();
+      this.setOnlineNotice('[data-auth-notice]', 'You are signed out.');
+    });
+    overlay.querySelector('[data-board-signin]')?.addEventListener('click', () => this.openOnlinePanel('auth'));
+    overlay.querySelectorAll<HTMLButtonElement>('[data-board-level]').forEach(button => {
+      button.addEventListener('click', () => {
+        this.leaderboardLevel = Number(button.dataset.boardLevel);
+        overlay.querySelectorAll<HTMLButtonElement>('[data-board-level]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
+        void this.loadOnlineLeaderboard();
+      });
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && this.onlineOverlay?.classList.contains('is-visible')) close();
+    });
+    this.renderOnlineAuth();
+  }
+
+  private openOnlinePanel(view: 'auth' | 'leaderboard') {
+    const overlay = this.onlineOverlay;
+    if (!overlay) return;
+    const auth = overlay.querySelector<HTMLElement>('[data-online-auth-view]');
+    const board = overlay.querySelector<HTMLElement>('[data-online-board-view]');
+    if (auth) auth.hidden = view !== 'auth';
+    if (board) board.hidden = view !== 'leaderboard';
+    overlay.dataset.view = view;
+    overlay.classList.add('is-visible');
+    overlay.setAttribute('aria-hidden', 'false');
+    if (view === 'auth') this.renderOnlineAuth();
+    else void this.loadOnlineLeaderboard();
+  }
+
+  private renderOnlineAuth() {
+    const overlay = this.onlineOverlay;
+    if (!overlay) return;
+    const signedIn = Boolean(this.online.user);
+    const signup = this.onlineMode === 'signup';
+    const title = overlay.querySelector<HTMLElement>('#online-title');
+    const intro = overlay.querySelector<HTMLElement>('[data-auth-intro]');
+    const username = overlay.querySelector<HTMLElement>('[data-auth-username-wrap]');
+    const form = overlay.querySelector<HTMLElement>('[data-auth-form]');
+    const member = overlay.querySelector<HTMLElement>('[data-online-member]');
+    const switcher = overlay.querySelector<HTMLButtonElement>('[data-auth-mode-toggle]');
+    const memberName = overlay.querySelector<HTMLElement>('[data-online-member-name]');
+    if (title) title.textContent = signedIn ? 'Your heist account' : signup ? 'Create your account' : 'Welcome back';
+    if (intro) intro.textContent = signedIn ? 'Your best completed score for each level is saved to your account.' : 'Save your best runs and compete on each level’s leaderboard.';
+    if (username) username.hidden = signedIn || !signup;
+    const usernameInput = overlay.querySelector<HTMLInputElement>('[name="username"]');
+    if (usernameInput) usernameInput.required = !signedIn && signup;
+    if (form) form.hidden = signedIn;
+    if (member) member.hidden = !signedIn;
+    if (memberName) memberName.textContent = signedIn ? `SIGNED IN AS  ${this.online.username}` : '';
+    if (switcher) {
+      switcher.hidden = signedIn;
+      switcher.textContent = signup ? 'Already have an account? Sign in' : 'New to Fagiolo Heist? Create an account';
+    }
+    const password = overlay.querySelector<HTMLInputElement>('[name="password"]');
+    if (password) password.autocomplete = signup ? 'new-password' : 'current-password';
+    const submit = overlay.querySelector<HTMLButtonElement>('[data-auth-submit]');
+    if (submit) submit.textContent = signup ? 'CREATE ACCOUNT' : 'SIGN IN';
+    const signInCta = overlay.querySelector<HTMLButtonElement>('[data-board-signin]');
+    if (signInCta) signInCta.hidden = signedIn;
+    const notice = overlay.querySelector<HTMLElement>('[data-auth-notice]');
+    if (!this.online.isConfigured && notice && !notice.textContent) {
+      notice.textContent = 'Online accounts are not connected yet. Add your Supabase settings to .env.local.';
+    }
+  }
+
+  private async submitOnlineAuth(event: Event) {
+    event.preventDefault();
+    const overlay = this.onlineOverlay;
+    const form = overlay?.querySelector<HTMLFormElement>('[data-auth-form]');
+    const submit = overlay?.querySelector<HTMLButtonElement>('[data-auth-submit]');
+    if (!form || !submit) return;
+    const values = new FormData(form);
+    const username = String(values.get('username') ?? '').trim();
+    const email = String(values.get('email') ?? '').trim();
+    const password = String(values.get('password') ?? '');
+    submit.disabled = true;
+    this.setOnlineNotice('[data-auth-notice]', this.onlineMode === 'signup' ? 'Creating your account…' : 'Signing in…');
+    try {
+      if (this.onlineMode === 'signup') {
+        if (!/^[A-Za-z0-9_]{3,18}$/.test(username)) throw new Error('Player name must be 3–18 letters, numbers, or underscores.');
+        const result = await this.online.signUp(username, email, password);
+        if (result.needsEmailConfirmation) {
+          this.setOnlineNotice('[data-auth-notice]', 'Account created. Check your email to confirm it, then sign in.');
+        } else {
+          this.renderOnlineAuth();
+          this.setOnlineNotice('[data-auth-notice]', 'Account ready. Your completed runs can now appear on the leaderboard.');
+          if (this.state === 'won') void this.submitCompletedRun();
+        }
+      } else {
+        await this.online.signIn(email, password);
+        this.renderOnlineAuth();
+        this.setOnlineNotice('[data-auth-notice]', 'Signed in. Your completed runs will be saved automatically.');
+        if (this.state === 'won') void this.submitCompletedRun();
+      }
+    } catch (error) {
+      this.setOnlineNotice('[data-auth-notice]', error instanceof Error ? error.message : 'Could not complete sign-in. Please try again.');
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  private async loadOnlineLeaderboard() {
+    const overlay = this.onlineOverlay;
+    const list = overlay?.querySelector<HTMLOListElement>('[data-board-list]');
+    if (!overlay || !list) return;
+    list.replaceChildren();
+    this.setOnlineNotice('[data-board-notice]', this.online.isConfigured ? 'Loading level leaderboard…' : 'Connect your Supabase project to load leaderboard scores.');
+    try {
+      const entries = await this.online.getLeaderboard(this.leaderboardLevel);
+      if (!entries.length) {
+        this.setOnlineNotice('[data-board-notice]', 'No completed runs yet. Finish this level to claim the first spot.');
+        return;
+      }
+      this.setOnlineNotice('[data-board-notice]', '');
+      entries.forEach((entry: LeaderboardEntry, index: number) => {
+        const row = document.createElement('li');
+        row.className = `online-board-row${index === 0 ? ' is-first' : ''}`;
+        const player = document.createElement('span');
+        player.className = 'online-board-player';
+        const rank = document.createElement('b');
+        rank.textContent = String(index + 1).padStart(2, '0');
+        const name = document.createElement('strong');
+        name.textContent = entry.username;
+        player.append(rank, name);
+        const score = document.createElement('b');
+        score.className = 'online-board-score';
+        score.textContent = entry.score.toLocaleString();
+        const beans = document.createElement('span');
+        beans.textContent = `${entry.beans_collected}/${entry.total_beans}`;
+        const time = document.createElement('span');
+        const elapsedSeconds = Math.floor(entry.completion_time_ms / 1000);
+        time.textContent = `${String(Math.floor(elapsedSeconds / 60)).padStart(2, '0')}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+        row.append(player, score, beans, time);
+        list.append(row);
+      });
+    } catch (error) {
+      this.setOnlineNotice('[data-board-notice]', error instanceof Error ? error.message : 'Could not load the leaderboard.');
+    }
+  }
+
+  private setOnlineNotice(selector: string, message: string) {
+    const notice = this.onlineOverlay?.querySelector<HTMLElement>(selector);
+    if (notice) notice.textContent = message;
+  }
+
+  private syncOnlineEntryPoints() {
+    document.querySelectorAll<HTMLButtonElement>('[data-open-auth]').forEach(button => {
+      button.textContent = this.online.user ? `@${this.online.username.slice(0, 10)}` : 'Sign in';
+      button.setAttribute('aria-label', this.online.user ? `Account: ${this.online.username}` : 'Sign in or create account');
+    });
+    if (this.onlineOverlay?.dataset.view === 'auth') this.renderOnlineAuth();
+  }
+
+  private async submitCompletedRun() {
+    if (!this.online.isConfigured || !this.online.user) return;
+    try {
+      const collected = this.coins.filter(coin => coin.taken).length;
+      const updated = await this.online.submitScore(this.levelIndex + 1, this.score, collected, this.coins.length, Math.max(1, Math.round(this.elapsed * 1000)));
+      this.leaderboardRunStatus = updated ? 'Your best run is now on the leaderboard.' : 'Your previous best run remains on the leaderboard.';
+    } catch (error) {
+      this.leaderboardRunStatus = error instanceof Error ? error.message : 'Could not save this run to the leaderboard.';
+    }
+    if (this.state === 'won') this.drawHud(false);
   }
 
   private requiresLandscape() {
@@ -724,7 +969,7 @@ class HeistScene extends Phaser.Scene {
         this.orientationResumeState = undefined;
         this.hideOrientationGate();
         this.state = resumeState;
-        this.pauseMenu?.classList.toggle('is-visible', resumeState === 'paused' && !this.settingsOpen);
+        this.pauseMenu?.classList.toggle('is-visible', resumeState === 'paused' && !this.settingsOpen && !this.refillChoicePending);
         this.settingsMenu?.classList.toggle('is-visible', resumeState === 'paused' && this.settingsOpen);
         this.updateMusicMix();
         this.drawHud(resumeState === 'paused');
@@ -773,7 +1018,7 @@ class HeistScene extends Phaser.Scene {
     this.settingsOpen = false;
     this.settingsMenu?.classList.remove('is-visible');
     if (resume && this.state === 'paused') this.state = 'playing';
-    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused');
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.refillChoicePending);
     this.updateMusicMix();
     if (this.state === 'playing' || this.state === 'paused') this.drawHud(this.state === 'paused');
   }
@@ -839,6 +1084,8 @@ class HeistScene extends Phaser.Scene {
   private returnToTitle() {
     this.state = 'title';
     this.settingsOpen = false;
+    this.refillChoicePending = false;
+    this.refillChoiceMenu?.classList.remove('is-visible');
     this.pendingLandscapeLevel = undefined;
     this.orientationResumeState = undefined;
     this.hideOrientationGate();
@@ -873,12 +1120,15 @@ class HeistScene extends Phaser.Scene {
     this.chestSprites.forEach(sprite => sprite.setVisible(false));
     this.laserPostSprites.forEach(pair => pair.forEach(sprite => sprite.setVisible(false)));
     this.coinSprites.forEach(sprite => sprite.setVisible(false));
+    this.refillSprite?.setVisible(false);
+    this.extraLifePickupSprite?.setVisible(false);
     this.powerupSprites.forEach(sprite => sprite.setVisible(false));
+    this.powerupChargeTexts.forEach(text => text.setVisible(false));
     this.modalArt?.clear().setVisible(false);
     for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue', 'modalTitle', 'modalBody', 'modalButtonText', 'modalSecondaryButtonText']) {
       ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
     }
-    for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
+    for (const groupName of ['powerupLabels', 'powerupStatus']) {
       ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text => text.setVisible(false));
     }
     this.setLandingBackdrop();
@@ -1109,6 +1359,9 @@ class HeistScene extends Phaser.Scene {
     };
     this.checkpoints = this.sourceCheckpoints.filter(point => point > sourceStart && point < sourceEnd).map(point => point - sourceStart);
     if (this.checkpoints.length === 0) this.checkpoints = [Math.floor(this.courseWidth * 0.55)];
+    const pickupSurface = (x: number) => this.activePlatforms.find(platform => x >= platform.x && x <= platform.x + platform.w)?.y ?? FLOOR;
+    this.refillPickup = { x: LEVEL_REFILL_X[this.levelIndex], y: pickupSurface(LEVEL_REFILL_X[this.levelIndex]) - 42, taken: false };
+    this.extraLifePickup = { x: LEVEL_EXTRA_LIFE_X[this.levelIndex], y: pickupSurface(LEVEL_EXTRA_LIFE_X[this.levelIndex]) - 40, taken: false };
     const levelStart = 0;
     const levelEnd = this.courseWidth;
     const firstPlatform = this.activePlatforms[0];
@@ -1118,14 +1371,14 @@ class HeistScene extends Phaser.Scene {
     this.player = { x: spawnX, y: spawnSurfaceY - 34, vx: 0, vy: 0, grounded: true };
     this.coins.forEach(c => { c.locked = c.crateIndex !== undefined; });
     this.crates.forEach(crate => { crate.broken = false; });
-    this.score = 0; this.lives = 3; this.timeLeft = RUN_TIME_SECONDS; this.elapsed = 0; this.hurtTimer = 0; this.animTime = 0;
+    this.score = 0; this.lives = 3; this.timeLeft = RUN_TIME_SECONDS; this.elapsed = 0; this.hurtTimer = 0; this.animTime = 0; this.leaderboardRunStatus = '';
     this.heroGait = 0; this.jumpAnticipationTimer = 0; this.jumpBufferTimer = 0; this.coyoteTimer = 0; this.autoLeapForward = false; this.landingTimer = 0; this.landingSquash = 0;
     this.checkpointX = spawnX; this.checkpointY = spawnSurfaceY - 34; this.nextCheckpointIndex = 0;
     this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
     this.tweens.killTweensOf(this.levelBanner);
     this.levelBanner.setVisible(false).setAlpha(0).setY(145);
     this.chestOpened = false; this.chestAnimTimer = 0;
-    this.speedTimer = 0; this.invisibilityTimer = 0; this.magnetTimer = 0; this.extraLifeAvailable = true; this.settingsOpen = false;
+    this.speedTimer = 0; this.invisibilityTimer = 0; this.magnetTimer = 0; this.powerupCharges = [1, 1, 1]; this.extraLifeAvailable = false; this.refillChoicePending = false; this.refillChoiceMenu?.classList.remove('is-visible'); this.settingsOpen = false;
     this.guards.forEach(guard => { guard.x = guard.spawnX; guard.y = guard.spawnY; guard.direction = guard.spawnDirection; guard.velocity = guard.direction * 76; guard.mode = 'patrol'; guard.timer = 0; guard.turning = false; guard.lastSeenX = guard.x; guard.anim = 0; guard.gait = 0; });
     this.state = 'playing';
     this.hudRefreshTimer = 0;
@@ -1182,6 +1435,8 @@ class HeistScene extends Phaser.Scene {
     });
     this.coinSprites.forEach(sprite => sprite.setVisible(false));
     this.coins.forEach((coin, index) => this.coinSprites[index]?.setPosition(coin.x, coin.y).setVisible(!coin.taken));
+    this.refillSprite?.setPosition(this.refillPickup.x, this.refillPickup.y).setVisible(true);
+    this.extraLifePickupSprite?.setPosition(this.extraLifePickup.x, this.extraLifePickup.y).setVisible(true);
     this.platformSprites.forEach(sprite => sprite.setDepth(1));
     this.worldPropSprites.forEach(sprite => sprite.setDepth(2));
     this.spikeSprites.forEach(sprite => sprite.setDepth(2.5));
@@ -1195,7 +1450,8 @@ class HeistScene extends Phaser.Scene {
     this.cameras.main.setViewport(0, 0, this.scale.width, this.scale.height);
     this.cameras.main.setBounds(levelStart, 0, levelEnd - levelStart, H);
     this.cameras.main.setScroll(levelStart, 0);
-    this.cameras.main.startFollow(this.heroSprite, true, 0.12, 0.08);
+    const shortLandscapeTouch = this.isShortLandscapeTouch();
+    this.cameras.main.startFollow(this.heroSprite, true, 0.12, shortLandscapeTouch ? 0.12 : 0.08);
     const goalX = levelEnd - 110;
     this.chestSprites[0].setPosition(goalX, FLOOR).setVisible(true).setTexture('prop-chest-0');
     this.chestSprites[1].setVisible(false);
@@ -1205,27 +1461,36 @@ class HeistScene extends Phaser.Scene {
   }
 
   private togglePause() {
+    if (this.refillChoicePending) return;
     if (this.settingsOpen) { this.closeSettings(true); return; }
     if (this.state === 'playing') this.state = 'paused';
     else if (this.state === 'paused') this.state = 'playing';
-    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused');
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.refillChoicePending);
     this.updateMusicMix();
     this.drawHud(this.state === 'paused');
   }
 
   private resizeGameView(width: number, height: number) {
     if (!width || !height) return;
-    // Scale the game world uniformly to fit short landscape screens. This keeps
-    // characters and platforms in proportion while letting wide screens reveal
-    // more of the level horizontally.
-    const zoomX = Math.min(1, width / W, height / H);
+    // Phone landscape gets a closer camera: fitting all 934 world units into a
+    // short screen made Fagiolo and the hazards too small to read. The camera
+    // follows near the floor, so this trims mostly empty sky instead of
+    // stretching the level or cropping the route in front of the player.
+    const shortLandscapeTouch = this.isShortLandscapeTouch(width, height);
+    const zoomX = shortLandscapeTouch
+      ? Math.min(1, width / 1280, height / 700)
+      : Math.min(1, width / W, height / H);
     const zoomY = zoomX;
     const viewWidth = width / zoomX;
     const viewHeight = height / zoomY;
-    this.cameras.main.setViewport(0, 0, viewWidth, viewHeight);
+    // The camera viewport is measured in canvas pixels, not world units.
+    // Using the expanded world-view dimensions here applies the mobile fit
+    // scale twice, making the level and its sprites look unusually small.
+    this.cameras.main.setViewport(0, 0, width, height);
     this.viewOffsetX = Math.max(0, (viewWidth - W) / 2);
     this.viewOffsetY = Math.max(0, (viewHeight - H) / 2);
     this.cameras.main.setZoom(zoomX, zoomY);
+    this.applyGameplayTextResolution(shortLandscapeTouch ? 2 : 1);
 
     // Keep ground platforms visually connected to the bottom of a taller
     // browser viewport while preserving their collision tops and jump layout.
@@ -1259,18 +1524,48 @@ class HeistScene extends Phaser.Scene {
     if (this.state === 'title') this.setLandingBackdrop();
   }
 
+  private isShortLandscapeTouch(width = this.scale.width, height = this.scale.height) {
+    return this.touchControlsVisible && width > height && height <= 600;
+  }
+
+  private gameplayTextResolution() {
+    return this.isShortLandscapeTouch() ? 2 : 1;
+  }
+
+  private applyGameplayTextResolution(resolution: number) {
+    this.children.list.forEach(child => {
+      if (child instanceof Phaser.GameObjects.Text && child.style.resolution !== resolution) child.setResolution(resolution);
+    });
+  }
+
   private activatePowerup(index: number) {
     if (this.state !== 'playing') return;
-    let activated = true;
-    if (index === 0) this.speedTimer = 7;
-    if (index === 1) this.invisibilityTimer = 6;
-    if (index === 2) this.magnetTimer = 8;
-    if (index === 3 && this.extraLifeAvailable) { this.lives = Math.min(4, this.lives + 1); this.extraLifeAvailable = false; }
-    else if (index === 3) activated = false;
-    if (activated) {
-      this.playGameSound('power');
-      this.emitBurst(this.player.x, this.player.y - 42, 0xffdf74, 10);
+    if (index < 3) {
+      if (this.powerupCharges[index] <= 0) return;
+      if ((index === 0 && this.speedTimer > 0) || (index === 1 && this.invisibilityTimer > 0) || (index === 2 && this.magnetTimer > 0)) return;
+      this.powerupCharges[index]--;
+      if (index === 0) this.speedTimer = 5;
+      if (index === 1) this.invisibilityTimer = 5;
+      if (index === 2) this.magnetTimer = 5;
+    } else {
+      if (!this.extraLifeAvailable || this.lives >= 4) return;
+      this.lives++;
+      this.extraLifeAvailable = false;
     }
+    this.playGameSound('power');
+    this.emitBurst(this.player.x, this.player.y - 42, 0xffdf74, 10);
+  }
+
+  private chooseRefill(index: number) {
+    if (!this.refillChoicePending || index < 0 || index > 2 || this.powerupCharges[index] >= 2) return;
+    this.powerupCharges[index]++;
+    this.refillChoicePending = false;
+    this.refillChoiceMenu?.classList.remove('is-visible');
+    this.state = 'playing';
+    this.updateMusicMix();
+    this.playGameSound('power');
+    this.emitBurst(this.player.x, this.player.y - 42, 0xffdf74, 10);
+    this.drawHud(false);
   }
 
   private playGameSound(kind: 'start' | 'menu' | 'jump' | 'coin' | 'power' | 'guard' | 'hit' | 'chest' | 'win' | 'lose') {
@@ -1323,7 +1618,13 @@ class HeistScene extends Phaser.Scene {
 
   private finishRun(result: 'won' | 'lost' | 'timeout') {
     if (this.state !== 'playing') return;
+    this.leaderboardRunStatus = result === 'won'
+      ? !this.online.isConfigured ? 'Connect Supabase to save scores online.'
+        : !this.online.user ? 'Sign in to save this completed run.'
+          : 'Saving your completed run…'
+      : 'Only completed levels are submitted to the leaderboard.';
     if (result === 'won') {
+      this.score += 500; // Fixed completion reward from the finish chest.
       const collected = this.coins.filter(coin => coin.taken).length;
       if (collected >= this.raidBonusTarget) {
         this.raidBonusAwarded = true;
@@ -1340,6 +1641,7 @@ class HeistScene extends Phaser.Scene {
     this.playGameSound(result === 'won' ? 'win' : 'lose');
     if (result === 'won') this.emitBurst(this.player.x, this.player.y - 48, 0xffd365, 26);
     this.drawHud(false);
+    if (result === 'won') void this.submitCompletedRun();
   }
 
   update(_time: number, delta: number) {
@@ -1410,7 +1712,7 @@ class HeistScene extends Phaser.Scene {
     this.player.y += this.player.vy * dt;
     this.player.grounded = false;
 
-    // Crates can be smashed by a stomp or a rising jump into their side.
+      // Crates break only when Fagiolo lands on top; side and underside hits block him.
     for (let i = 0; i < this.crates.length; i++) {
       const crate = this.crates[i];
       if (crate.broken) continue;
@@ -1422,7 +1724,6 @@ class HeistScene extends Phaser.Scene {
 
       const overlapsBody = overlapsX && this.player.y + 30 > top && this.player.y - 30 < crate.surfaceY;
       if (!overlapsBody) continue;
-      if (this.player.vy < 0 && this.player.y < oldY) { this.breakCrate(i); continue; }
       if (oldX <= leftEdge - 22 && this.player.x > oldX) this.player.x = leftEdge - 22;
       else if (oldX >= rightEdge + 22 && this.player.x < oldX) this.player.x = rightEdge + 22;
       this.player.vx = 0;
@@ -1452,7 +1753,7 @@ class HeistScene extends Phaser.Scene {
       this.checkpointY = this.player.y;
       this.nextCheckpointIndex++;
       this.emitBurst(this.checkpointX, this.player.y - 34, 0x76e0a5, 12);
-      const checkpointLabel = this.add.text(this.checkpointX, this.player.y - 76, 'CHECKPOINT', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '18px', fontStyle: 'bold', color: '#bfffd2', stroke: '#173b2b', strokeThickness: 5 }).setOrigin(0.5).setDepth(4);
+      const checkpointLabel = this.add.text(this.checkpointX, this.player.y - 76, 'CHECKPOINT', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '18px', fontStyle: 'bold', color: '#bfffd2', stroke: '#173b2b', strokeThickness: 5 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(4);
       this.tweens.add({ targets: checkpointLabel, y: checkpointLabel.y - 35, alpha: 0, duration: 900, ease: 'Cubic.Out', onComplete: () => checkpointLabel.destroy() });
     }
     if (this.player.grounded && Math.abs(this.player.vx) > 0) {
@@ -1471,22 +1772,71 @@ class HeistScene extends Phaser.Scene {
       const rightEmitterX = gate.rightPostX - LASER_EMITTER_X_OFFSET;
       if (laserActive && this.player.x > leftEmitterX && this.player.x < rightEmitterX && Math.abs(this.player.y - LASER_Y) < 48) this.takeHit();
     }
+    if (!this.refillPickup.taken && this.powerupCharges.some(charge => charge < 2)
+      && Math.abs(this.player.x - this.refillPickup.x) < 52 && Math.abs(this.player.y - this.refillPickup.y) < 72) {
+      this.refillPickup.taken = true;
+      this.refillChoicePending = true;
+      this.state = 'paused';
+      this.pauseMenu?.classList.remove('is-visible');
+      this.refillChoiceMenu?.classList.add('is-visible');
+      this.updateMusicMix();
+      this.refillChoiceMenu?.querySelectorAll<HTMLButtonElement>('[data-refill]').forEach(button => {
+        const gadget = Number(button.dataset.refill);
+        button.disabled = this.powerupCharges[gadget] >= 2;
+        button.querySelector<HTMLElement>('[data-refill-count]')!.textContent = String(this.powerupCharges[gadget]) + ' / 2 CHARGES';
+      });
+      this.refillSprite?.setVisible(false);
+      this.drawHud(true);
+      return;
+    }
+    if (!this.extraLifePickup.taken && !this.extraLifeAvailable && this.lives < 4
+      && Math.abs(this.player.x - this.extraLifePickup.x) < 48 && Math.abs(this.player.y - this.extraLifePickup.y) < 70) {
+      this.extraLifePickup.taken = true;
+      this.extraLifeAvailable = true;
+      this.extraLifePickupSprite?.setVisible(false);
+      this.playGameSound('power');
+      this.emitBurst(this.extraLifePickup.x, this.extraLifePickup.y, 0xff536d, 14);
+      this.drawHud(false);
+    }
     for (const c of this.coins) {
-      const collectRadius = this.magnetTimer > 0 ? 190 : 48;
-      if (!c.taken && !c.locked && Phaser.Math.Distance.Between(this.player.x, this.player.y, c.x, c.y) < collectRadius) {
-        c.taken = true; this.score += 100;
+      if (c.taken || c.locked) continue;
+      let dx = this.player.x - c.x;
+      let dy = this.player.y - 4 - c.y;
+      let distance = Math.hypot(dx, dy);
+
+      // The magnet pulls visible, unlocked beans toward Fagiolo instead of
+      // merely awarding them from a larger invisible pickup radius.
+      if (this.magnetTimer > 0 && distance < 560 && distance > 2) {
+        const pull = Math.min(1, 760 * dt / distance);
+        c.x += dx * pull;
+        c.y += dy * pull;
+        dx = this.player.x - c.x;
+        dy = this.player.y - 4 - c.y;
+        distance = Math.hypot(dx, dy);
+      }
+
+      // Use a body-sized pickup area: low beans can be collected while
+      // running past them, while beans on higher ledges still need a leap.
+      const inReach = (dx / 58) ** 2 + (dy / 78) ** 2 <= 1;
+      if (inReach || (this.magnetTimer > 0 && distance < 38)) {
+        c.taken = true;
+        this.score += 100;
         this.playGameSound('coin');
         this.emitBurst(c.x, c.y, 0xffdd4d, 7);
-        const popup = this.add.text(c.x, c.y - 20, '+100', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#fff1a4', stroke: '#58330c', strokeThickness: 4 }).setOrigin(0.5).setDepth(3);
+        const popup = this.add.text(c.x, c.y - 20, '+100', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#fff1a4', stroke: '#58330c', strokeThickness: 4 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(3);
         this.tweens.add({ targets: popup, y: popup.y - 46, alpha: 0, duration: 620, ease: 'Cubic.Out', onComplete: () => popup.destroy() });
       }
     }
     this.coins.forEach((coin, i) => {
       const sprite = this.coinSprites[i];
       sprite.setVisible(!coin.taken && !coin.locked);
-      sprite.setY(coin.y + Math.sin(this.animTime * 5 + coin.x) * 4);
+      sprite.setPosition(coin.x, coin.y + Math.sin(this.animTime * 5 + coin.x) * 4);
       sprite.setAngle(Math.sin(this.animTime * 2.2 + coin.x) * 12);
     });
+    this.refillSprite?.setPosition(this.refillPickup.x, this.refillPickup.y + Math.sin(this.animTime * 3.2) * 4)
+      .setAngle(Math.sin(this.animTime * 1.7) * 4).setVisible(!this.refillPickup.taken);
+    this.extraLifePickupSprite?.setPosition(this.extraLifePickup.x, this.extraLifePickup.y + Math.sin(this.animTime * 3.5 + 1) * 5)
+      .setAngle(Math.sin(this.animTime * 2) * 6).setVisible(!this.extraLifePickup.taken);
     const levelEnd = this.courseWidth;
     if (!this.chestOpened && this.player.x >= levelEnd - 220) {
       this.chestOpened = true; this.chestAnimTimer = 0; this.playGameSound('chest'); this.emitBurst(levelEnd - 110, 690, 0xffd365, 18);
@@ -1597,6 +1947,11 @@ class HeistScene extends Phaser.Scene {
     if (this.hurtTimer > 0 || this.invisibilityTimer > 0 || this.state !== 'playing') return;
     this.lives -= 1;
     this.timeLeft = Math.max(0, this.timeLeft - 3);
+    // A hit ends timed power effects immediately; remaining charges and the
+    // unspent extra-life pickup stay available after the player respawns.
+    this.speedTimer = 0;
+    this.invisibilityTimer = 0;
+    this.magnetTimer = 0;
     this.hurtTimer = 1.2;
     this.playGameSound('hit');
     this.cameras.main.flash(130, 255, 93, 72, false);
@@ -2038,7 +2393,7 @@ class HeistScene extends Phaser.Scene {
     const compactTouchHud = viewWidth < 700 || (viewWidth < 1100 && this.scale.height < 600);
     const ensureText = (key: string, x: number, y: number, style: any) => {
       const owner = this as any;
-      if (!owner[key]) owner[key] = this.add.text(x, y, '', style).setDepth(9).setScrollFactor(0);
+      if (!owner[key]) owner[key] = this.add.text(x, y, '', style).setResolution(this.gameplayTextResolution()).setDepth(9).setScrollFactor(0);
       return (owner[key] as Phaser.GameObjects.Text).setPosition(uiX(x), uiY(y)).setScale(hudScale);
     };
     const labelStyle = { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '12px', fontStyle: 'bold', color: '#f0f5f7', letterSpacing: 1.2, stroke: '#071625', strokeThickness: 1 };
@@ -2123,29 +2478,28 @@ class HeistScene extends Phaser.Scene {
     // Individual gadget controls use the same refined language as pause and settings.
     const compactHud = viewWidth < 1100;
     const gadgetSize = Phaser.Math.Clamp((viewWidth - 266) / 4, 30, 48);
-    const gadgetGap = compactTouchHud ? 6 : 0;
-    const gadgetRowCenter = (Math.max(160, viewWidth - 86) + 160) / 2;
-    const gadgetStep = gadgetSize + gadgetGap;
-    const powerupXs = compactTouchHud
-      ? [0, 1, 2, 3].map(index => gadgetRowCenter + (index - 1.5) * gadgetStep)
-      : compactHud ? [66, 190, 314, 438] : [96, 246, 396, 546];
+    const cardWidth = compactTouchHud ? gadgetSize : compactHud ? 112 : 132;
+    const cardHeight = compactTouchHud ? gadgetSize : 86;
+    const gadgetGap = compactTouchHud ? 8 : compactHud ? 12 : 16;
+    const gadgetStep = cardWidth + gadgetGap;
+    const totalGadgetWidth = cardWidth * 4 + gadgetGap * 3;
+    const firstGadgetCenter = (viewWidth - totalGadgetWidth) / 2 + cardWidth / 2;
+    const powerupXs = [0, 1, 2, 3].map(index => firstGadgetCenter + index * gadgetStep);
     const powerups = [
-      { x: powerupXs[0], title: 'SPEED', color: 0xffcf22, status: this.speedTimer > 0 ? `${Math.ceil(this.speedTimer)}s` : 'READY' },
-      { x: powerupXs[1], title: 'CLOAK', color: 0x88e9ff, status: this.invisibilityTimer > 0 ? `${Math.ceil(this.invisibilityTimer)}s` : 'READY' },
-      { x: powerupXs[2], title: 'MAGNET', color: 0xff3b8b, status: this.magnetTimer > 0 ? `${Math.ceil(this.magnetTimer)}s` : 'READY' },
-      { x: powerupXs[3], title: 'EXTRA LIFE', color: this.extraLifeAvailable ? 0xff536d : 0x65708a, status: this.extraLifeAvailable ? 'READY' : 'USED' },
+      { x: powerupXs[0], title: 'SPEED', color: 0xffcf22, status: this.speedTimer > 0 ? `${Math.ceil(this.speedTimer)}s` : `${this.powerupCharges[0]} CHARGE${this.powerupCharges[0] === 1 ? '' : 'S'}` },
+      { x: powerupXs[1], title: 'CLOAK', color: 0x88e9ff, status: this.invisibilityTimer > 0 ? `${Math.ceil(this.invisibilityTimer)}s` : `${this.powerupCharges[1]} CHARGE${this.powerupCharges[1] === 1 ? '' : 'S'}` },
+      { x: powerupXs[2], title: 'MAGNET', color: 0xff3b8b, status: this.magnetTimer > 0 ? `${Math.ceil(this.magnetTimer)}s` : `${this.powerupCharges[2]} CHARGE${this.powerupCharges[2] === 1 ? '' : 'S'}` },
+      { x: powerupXs[3], title: 'EXTRA LIFE', color: this.extraLifeAvailable ? 0xff536d : 0x65708a, status: this.extraLifeAvailable ? 'READY' : 'FIND' },
     ];
-    const cardY = viewHeight - 102;
+    const cardY = viewHeight - cardHeight - 12;
     for (const [i, power] of powerups.entries()) {
       const activePowerup = i === 0 ? this.speedTimer > 0 : i === 1 ? this.invisibilityTimer > 0 : i === 2 ? this.magnetTimer > 0 : this.extraLifeAvailable;
       const pulse = (Math.sin(this.animTime * (activePowerup ? 8 : 3) + i * 1.4) + 1) / 2;
       const iconScale = 1;
       const hovered = this.gadgetHover[i];
-      const cardWidth = compactTouchHud ? gadgetSize : compactHud ? 112 : 132;
-      const cardHeight = compactTouchHud ? gadgetSize : 86;
       const controlX = power.x;
-      const cardTop = compactTouchHud ? viewHeight - cardHeight - 9 : cardY + 2;
-      this.powerupZones[i]?.setPosition(uiX(controlX), uiY(cardTop + cardHeight / 2)).setSize((cardWidth + 8) * hudScale, (cardHeight + 12) * hudScale);
+      const cardTop = cardY;
+      this.powerupZones[i]?.setPosition(uiX(controlX), uiY(cardTop + cardHeight / 2)).setSize(cardWidth * hudScale, cardHeight * hudScale);
       const cardLit = activePowerup || hovered;
       g.fillStyle(0x041a3d, hovered ? 0.84 : 0.72); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
       g.fillStyle(cardLit ? 0x1477d4 : 0x0a4c9b, 0.98); g.fillRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
@@ -2157,79 +2511,114 @@ class HeistScene extends Phaser.Scene {
         g.fillStyle(power.color, activePowerup ? 0.94 : 0.58); g.fillRoundedRect(controlX - 42, cardTop + cardHeight - 4, 84, 2.5, 2);
       }
       this.powerupSprites[i]
-        .setPosition(uiX(compactTouchHud ? controlX : controlX - 32), uiY(cardTop + (compactTouchHud ? cardHeight / 2 : 36)))
-        .setDisplaySize((compactTouchHud ? Math.min(26, gadgetSize * 0.52) : 34) * iconScale * hudScale, (compactTouchHud ? Math.min(26, gadgetSize * 0.52) : 34) * iconScale * hudScale)
+        .setPosition(uiX(controlX), uiY(cardTop + (compactTouchHud ? cardHeight * 0.42 : 24)))
+        .setDisplaySize((compactTouchHud ? Math.min(22, gadgetSize * 0.45) : 34) * iconScale * hudScale, (compactTouchHud ? Math.min(22, gadgetSize * 0.45) : 34) * iconScale * hudScale)
         .setDepth(9)
         .setVisible(true)
         .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
       if (compactTouchHud) {
         const badgeRadius = gadgetSize < 38 ? 7 : 8;
         const badgeX = controlX + cardWidth / 2 - badgeRadius;
-        const badgeY = cardTop + cardHeight - badgeRadius;
+        const badgeY = cardTop + badgeRadius;
         g.fillStyle(0x062d63, 1); g.fillCircle(badgeX, badgeY, badgeRadius);
         g.lineStyle(1.3, power.color, hovered || activePowerup ? 1 : 0.92); g.strokeCircle(badgeX, badgeY, badgeRadius);
       } else {
-        g.fillStyle(power.color, activePowerup ? 0.95 : 0.55); g.fillCircle(controlX - 32, cardTop + 67, 2.3);
-        g.fillStyle(0x062d63, 1); g.fillCircle(controlX + 43, cardTop + 64, 12);
-        g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + 43, cardTop + 64, 12);
+        g.fillStyle(0x062d63, 1); g.fillCircle(controlX + cardWidth / 2 - 14, cardTop + 14, 12);
+        g.lineStyle(1.8, power.color, hovered || activePowerup ? 1 : 0.86); g.strokeCircle(controlX + cardWidth / 2 - 14, cardTop + 14, 12);
       }
-      if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x - 7, cardY + 24, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f4f7f2', letterSpacing: 0.8, stroke: '#061525', strokeThickness: 1 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX - 7), uiY(cardY + 24)).setScale(hudScale).setText(power.title).setVisible(!compactTouchHud);
-      if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x - 7, cardY + 43, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fffdf5', stroke: '#061525', strokeThickness: 1 }).setDepth(9).setScrollFactor(0));
-      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX - 7), uiY(cardY + 43)).setScale(hudScale).setText(power.status).setColor(activePowerup ? '#ffe28a' : '#ffffff').setVisible(!compactTouchHud);
-      if (!(this as any).powerupKeys) (this as any).powerupKeys = powerups.map((_, key) => this.add.text(powerups[key].x + 43, cardY + 66, String(key + 1), { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', color: '#fffdf5', stroke: '#06121b', strokeThickness: 1 }).setOrigin(0.5).setDepth(9).setScrollFactor(0));
-      const keyX = compactTouchHud ? controlX + cardWidth / 2 - (gadgetSize < 38 ? 7 : 8) : controlX + 43;
-      const keyY = compactTouchHud ? cardTop + cardHeight - (gadgetSize < 38 ? 7 : 8) : cardY + 66;
-      ((this as any).powerupKeys as Phaser.GameObjects.Text[])[i].setPosition(uiX(keyX), uiY(keyY)).setScale(hudScale).setFontSize(compactTouchHud ? (gadgetSize < 38 ? 9 : 11) : 13).setVisible(true);
+      if (!this.powerupChargeTexts[i]) this.powerupChargeTexts[i] = this.add.text(0, 0, '', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '11px', color: '#fffdf5', stroke: '#06121b', strokeThickness: 2 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(10).setScrollFactor(0);
+      const charges = i < 3 ? this.powerupCharges[i] : Number(this.extraLifeAvailable);
+      this.powerupChargeTexts[i].setPosition(uiX(controlX + cardWidth / 2 - (compactTouchHud ? 8 : 14)), uiY(cardTop + (compactTouchHud ? 8 : 14)))
+        .setScale(hudScale).setFontSize(compactTouchHud ? 9 : 11).setText(String(charges)).setVisible(true);
+      if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x, cardY + 48, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f4f7f2', letterSpacing: 0.8, stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX), uiY(cardTop + 48)).setScale(hudScale).setText(power.title).setVisible(!compactTouchHud);
+      if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x, cardY + 68, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#fffdf5', stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
+      ((this as any).powerupStatus as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX), uiY(cardTop + 67)).setScale(hudScale).setText(power.status).setFontSize(10).setColor(activePowerup ? '#ffe28a' : '#ffffff').setVisible(!compactTouchHud);
     }
 
     const endState = this.state === 'won' || this.state === 'lost' || this.state === 'timeout';
     const modalOpen = endState;
     const runFailed = this.state === 'lost' || this.state === 'timeout';
-    this.gameResultActions?.classList.toggle('is-visible', runFailed);
-    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.settingsOpen);
+    const report = this.gameResultActions;
+    report?.classList.toggle('is-visible', endState);
+    report?.classList.toggle('is-won', this.state === 'won');
+    report?.classList.toggle('is-timeout', this.state === 'timeout');
+    report?.classList.toggle('is-lost', this.state === 'lost');
+    report?.setAttribute('aria-hidden', String(!endState));
+    if (endState && report) {
+      const complete = this.state === 'won';
+      const timedOut = this.state === 'timeout';
+      const collected = this.coins.filter(coin => coin.taken).length;
+      const text = (selector: string, value: string) => {
+        const element = report.querySelector<HTMLElement>(selector);
+        if (element) element.textContent = value;
+      };
+      text('[data-report-level]', String(this.levelIndex + 1));
+      text('[data-report-status]', complete ? 'ESCAPE MADE' : timedOut ? 'TIME EXPIRED' : 'BUSTED');
+      text('[data-report-title]', complete ? `LEVEL ${this.levelIndex + 1} COMPLETE` : timedOut ? "TIME'S UP" : 'OUT OF LIVES');
+      text('[data-report-subtitle]', complete ? 'Fagiolo got away with the goods.' : timedOut ? 'The escape window closed. Plan a quicker route.' : 'The guards caught up. Take another shot.');
+      text('[data-report-emblem]', complete ? '★' : timedOut ? '!' : '×');
+      text('[data-report-score]', String(this.score).padStart(5, '0'));
+      text('[data-report-beans]', `${String(collected).padStart(2, '0')} / ${String(this.coins.length).padStart(2, '0')}`);
+      text('[data-report-time]', `${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
+      text('[data-report-lives]', `${this.lives} / 4`);
+      text('[data-report-reward-kicker]', complete ? 'TREASURE CLAIMED' : 'LEVEL REWARD');
+      text('[data-report-reward]', complete ? 'CHEST +500' : 'CHEST BONUS LOCKED');
+      text('[data-report-extra]', complete
+        ? this.raidBonusAwarded ? 'BEAN RAID +500' : `COLLECT ${this.raidBonusTarget}+ FOR +500`
+        : 'CLEAR THE LEVEL TO CLAIM IT');
+      text('[data-result="primary"]', complete ? this.levelIndex < 2 ? 'PLAY NEXT LEVEL' : 'REPLAY LEVEL' : 'RETRY LEVEL');
+      text('[data-result="levels"]', complete ? 'LEVEL SELECT' : 'RETURN TO LEVELS');
+      text('[data-report-footnote]', complete ? 'Every bean brings you closer to the perfect escape.' : 'Your collected beans and score are shown above.');
+      text('[data-report-online-status]', this.leaderboardRunStatus);
+      text('[data-result="leaderboard"]', complete && !this.online.user ? 'SIGN IN TO SAVE SCORE' : 'LEADERBOARD');
+    }
+    if (endState) this.modalButtonZone?.disableInteractive();
+    this.pauseMenu?.classList.toggle('is-visible', this.state === 'paused' && !this.settingsOpen && !this.refillChoicePending);
     this.settingsMenu?.classList.toggle('is-visible', this.settingsOpen);
     const modal = this.modalArt;
     modal.setPosition(centerX * (1 - hudScale), centerY * (1 - hudScale)).setScale(hudScale);
-    modal.clear().setVisible(modalOpen);
+    modal.clear().setVisible(false);
     for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue']) {
       const item = (this as any)[key] as Phaser.GameObjects.Text | undefined;
       item?.setVisible(!modalOpen);
     }
-    for (const groupName of ['powerupLabels', 'powerupStatus', 'powerupKeys']) {
-      const showOnCompactMobile = groupName === 'powerupKeys';
+    for (const groupName of ['powerupLabels', 'powerupStatus']) {
       ((this as any)[groupName] as Phaser.GameObjects.Text[] | undefined)?.forEach(text =>
-        text.setVisible(!modalOpen && (showOnCompactMobile || !compactTouchHud)));
+        text.setVisible(!modalOpen && !compactTouchHud));
     }
     this.powerupSprites.forEach(sprite => sprite.setVisible(!modalOpen));
-    if (endState) {
-      modal.fillStyle(0x020a18, 0.76); modal.fillRect(0, 0, viewWidth, viewHeight);
-      const settings = false;
-      const panelW = Math.min(600, Math.max(260, viewWidth - 24));
-      const panelH = Math.min(360, Math.max(270, viewHeight - 28));
+    this.powerupChargeTexts.forEach(text => text.setVisible(!modalOpen));
+    if (endState && !this.gameResultActions) {
+      modal.fillStyle(0x020918, 0.8); modal.fillRect(0, 0, viewWidth, viewHeight);
+      const panelW = Math.max(280, Math.min(680, viewWidth - 24));
+      const panelH = Math.min(430, Math.max(310, viewHeight - 28));
       const panelX = viewWidth / 2 - panelW / 2;
       const panelY = viewHeight / 2 - panelH / 2;
-      modal.fillStyle(0x04122d, 0.72); modal.fillRoundedRect(panelX + 7, panelY + 9, panelW, panelH, 22);
-      modal.fillStyle(0x063b7e, 0.99); modal.fillRoundedRect(panelX, panelY, panelW, panelH, 22);
-      modal.lineStyle(3, 0x102d61, 1); modal.strokeRoundedRect(panelX, panelY, panelW, panelH, 22);
-      modal.lineStyle(1.2, 0xffd85e, 0.95); modal.strokeRoundedRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8, 19);
-      modal.fillStyle(0x1478d3, 1); modal.fillRoundedRect(panelX + 4, panelY + 4, panelW - 8, 86, 19);
-      modal.fillStyle(0xffdf64, 1); modal.fillRoundedRect(panelX + 30, panelY + 25, 6, 42, 3);
-      let title = 'PAUSED';
-      let body = 'Your heist is on hold.';
-      if (settings) { title = 'SETTINGS'; body = ''; }
-      else if (this.state === 'won') {
-        const collected = this.coins.filter(coin => coin.taken).length;
-        const raidReward = this.raidBonusAwarded ? 'RAID BONUS +500' : `BONUS AT ${this.raidBonusTarget} BEANS`;
-        title = `LEVEL ${this.levelIndex + 1} COMPLETE`;
-        body = `${collected} / ${this.coins.length} beans  |  ${raidReward}  |  Score ${this.score}`;
-      }
-      else if (this.state === 'timeout') { title = 'TIME IS UP'; body = 'The escape window closed. Try the level again or choose another.'; }
-      else if (this.state === 'lost') { title = 'OUT OF LIVES'; body = 'Fagiolo ran out of lives. Retry this level or choose another.'; }
-      const modalTitleText = ensureText('modalTitle', viewWidth / 2, panelY + 29, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#fff8e8', align: 'center', letterSpacing: 1 }).setDepth(13).setOrigin(0.5).setText(title).setVisible(true);
-      modalTitleText.setFontSize(viewWidth < 600 ? 23 : 30);
-      const modalBodyText = ensureText('modalBody', viewWidth / 2, panelY + 113, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '17px', color: '#c3d3d6', align: 'center' }).setDepth(13).setOrigin(0.5).setText(body).setVisible(true);
-      modalBodyText.setFontSize(viewWidth < 600 ? 14 : 17).setWordWrapWidth(panelW - 36);
+      const settings = false;
+      modal.fillStyle(0x020b20, 0.88); modal.fillRoundedRect(panelX + 7, panelY + 10, panelW, panelH, 22);
+      modal.fillStyle(0x071d3b, 0.99); modal.fillRoundedRect(panelX, panelY, panelW, panelH, 22);
+      modal.lineStyle(2.5, 0x1c4775, 1); modal.strokeRoundedRect(panelX, panelY, panelW, panelH, 22);
+      modal.lineStyle(1, 0xf0c865, 0.9); modal.strokeRoundedRect(panelX + 4, panelY + 4, panelW - 8, panelH - 8, 18);
+      modal.fillStyle(0x0c315c, 1); modal.fillRoundedRect(panelX + 5, panelY + 5, panelW - 10, 101, 18);
+      modal.fillStyle(0xffd15b, 1); modal.fillRoundedRect(panelX + 24, panelY + 15, panelW - 48, 2, 1);
+      const complete = this.state === 'won';
+      const isTimeout = this.state === 'timeout';
+      const title = complete ? `LEVEL ${this.levelIndex + 1} COMPLETE` : isTimeout ? 'TIME IS UP' : 'OUT OF LIVES';
+      const subtitle = complete ? 'TREASURE SECURED · ESCAPE COMPLETE'
+        : isTimeout ? 'The escape window closed. Take a quicker route next run.'
+          : 'Fagiolo ran out of lives. Try another run.';
+      const accent = complete ? 0x4ecf9b : isTimeout ? 0xf0bb55 : 0xff6b75;
+      modal.fillStyle(accent, 1); modal.fillCircle(panelX + 42, panelY + 54, 20);
+      modal.lineStyle(2, 0xfff2cf, 0.9); modal.strokeCircle(panelX + 42, panelY + 54, 20);
+      const seal = ensureText('resultSeal', panelX + 42, panelY + 54, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '22px', color: '#fff8e8', align: 'center' }).setDepth(13).setOrigin(0.5).setText(complete ? '★' : isTimeout ? '!' : '×').setVisible(true);
+      seal.setPosition(uiX(panelX + 42), uiY(panelY + 54)).setScale(hudScale);
+      const kicker = ensureText('resultKicker', viewWidth / 2, panelY + 20, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '9px', fontStyle: 'bold', color: '#ffe08a', align: 'center', letterSpacing: 2 }).setDepth(13).setOrigin(0.5).setText(`HEIST REPORT  ·  LEVEL ${this.levelIndex + 1}`).setVisible(true);
+      kicker.setPosition(uiX(viewWidth / 2), uiY(panelY + 20)).setScale(hudScale);
+      const modalTitleText = ensureText('modalTitle', viewWidth / 2, panelY + 47, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '31px', fontStyle: 'bold', color: '#fff8e8', align: 'center', letterSpacing: 0.7 }).setDepth(13).setOrigin(0.5).setText(title).setVisible(true);
+      modalTitleText.setFontSize(viewWidth < 600 ? 18 : 31).setPosition(uiX(viewWidth / 2), uiY(panelY + 47)).setScale(hudScale);
+      const modalBodyText = ensureText('modalBody', viewWidth / 2, panelY + 83, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#c7d9ec', align: 'center', letterSpacing: 0.5 }).setDepth(13).setOrigin(0.5).setText(subtitle).setVisible(true);
+      modalBodyText.setFontSize(viewWidth < 600 ? 9 : 11).setWordWrapWidth(panelW - 70).setPosition(uiX(viewWidth / 2), uiY(panelY + 83)).setScale(hudScale);
       if (settings) {
         const rows = [
           ['MOVE', 'A / D   or   LEFT / RIGHT'],
@@ -2252,7 +2641,36 @@ class HeistScene extends Phaser.Scene {
         }
       }
       if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { if (!settings) { row.label.setVisible(false); row.value.setVisible(false); } });
-      const buttonY = panelY + panelH - 38;
+      const collected = this.coins.filter(coin => coin.taken).length;
+      const timerValue = `${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`;
+      const stats = [
+        { label: 'SCORE', value: String(this.score).padStart(5, '0'), color: '#ffdf70', tint: 0xffdf70 },
+        { label: 'BEANS', value: `${collected}/${this.coins.length}`, color: '#ffd66d', tint: 0xffd66d },
+        { label: 'TIME LEFT', value: timerValue, color: this.timeLeft > 0 ? '#74dfbd' : '#ff8790', tint: this.timeLeft > 0 ? 0x74dfbd : 0xff8790 },
+        { label: 'LIVES', value: `${this.lives}/4`, color: '#ff8290', tint: 0xff8290 },
+      ];
+      const statsTop = panelY + 123;
+      const statsGap = 8;
+      const statWidth = (panelW - 40 - statsGap * 3) / 4;
+      for (const [index, item] of stats.entries()) {
+        const statX = panelX + 20 + index * (statWidth + statsGap);
+        modal.fillStyle(0x0b2b50, 1); modal.fillRoundedRect(statX, statsTop + 3, statWidth, 66, 11);
+        modal.fillStyle(0x103b69, 1); modal.fillRoundedRect(statX, statsTop, statWidth, 66, 11);
+        modal.lineStyle(1, item.tint, 0.48); modal.strokeRoundedRect(statX, statsTop, statWidth, 66, 11);
+        const label = ensureText(`resultStatLabel${index}`, statX + statWidth / 2, statsTop + 11, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '8px', fontStyle: 'bold', color: '#b8cce0', align: 'center', letterSpacing: 0.8 }).setDepth(13).setOrigin(0.5).setText(item.label).setVisible(true);
+        label.setPosition(uiX(statX + statWidth / 2), uiY(statsTop + 11)).setScale(hudScale);
+        const value = ensureText(`resultStatValue${index}`, statX + statWidth / 2, statsTop + 34, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '19px', color: item.color, align: 'center' }).setDepth(13).setOrigin(0.5).setText(item.value).setVisible(true);
+        value.setFontSize(viewWidth < 600 ? 15 : 19).setPosition(uiX(statX + statWidth / 2), uiY(statsTop + 34)).setScale(hudScale);
+      }
+      const rewardTop = panelY + 198;
+      modal.fillStyle(complete ? 0x173f57 : 0x102c4b, 1); modal.fillRoundedRect(panelX + 20, rewardTop, panelW - 40, 38, 10);
+      modal.lineStyle(1, complete ? 0x66d5ad : 0x6185a7, 0.55); modal.strokeRoundedRect(panelX + 20, rewardTop, panelW - 40, 38, 10);
+      const rewardText = complete
+        ? this.raidBonusAwarded ? 'CHEST +500     ·     BEAN RAID BONUS +500' : `CHEST +500     ·     COLLECT ${this.raidBonusTarget}+ BEANS FOR +500`
+        : isTimeout ? 'RETRY TO BEAT THE CLOCK' : 'RETRY TO KEEP YOUR BEANS';
+      const rewards = ensureText('resultRewards', viewWidth / 2, rewardTop + 12, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '12px', color: complete ? '#ffe89d' : '#c9d9eb', align: 'center', letterSpacing: 0.3 }).setDepth(13).setOrigin(0.5).setText(rewardText).setVisible(true);
+      rewards.setFontSize(viewWidth < 600 ? 9 : 12).setWordWrapWidth(panelW - 50).setPosition(uiX(viewWidth / 2), uiY(rewardTop + 12)).setScale(hudScale);
+      const buttonY = panelY + panelH - 37;
       const retryButtonText = ensureText('modalButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#173766', align: 'center', letterSpacing: 0.7 }).setDepth(13).setOrigin(0.5);
       const secondaryButtonText = ensureText('modalSecondaryButtonText', viewWidth / 2, buttonY - 13, { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff4d2', align: 'center', letterSpacing: 0.45 }).setDepth(13).setOrigin(0.5);
       if (runFailed) {
@@ -2261,16 +2679,16 @@ class HeistScene extends Phaser.Scene {
         secondaryButtonText.setVisible(false);
       } else {
         const buttonWidth = Math.min(270, panelW - 32);
-        modal.fillStyle(0x8a4c0d, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 23, buttonWidth, 54, 15);
-        modal.fillStyle(0xffcf32, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 54, 15);
-        modal.lineStyle(2, 0xfff1a5, 1); modal.strokeRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 54, 15);
+        modal.fillStyle(0x815013, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 23, buttonWidth, 52, 13);
+        modal.fillStyle(0xffd763, 1); modal.fillRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 52, 13);
+        modal.lineStyle(1.5, 0xfff1b4, 1); modal.strokeRoundedRect(viewWidth / 2 - buttonWidth / 2, buttonY - 27, buttonWidth, 52, 13);
         this.modalButtonZone?.setPosition(uiX(viewWidth / 2), uiY(buttonY)).setSize(buttonWidth * hudScale, 60 * hudScale).setInteractive();
-        retryButtonText.setPosition(uiX(viewWidth / 2), uiY(buttonY - 13)).setScale(hudScale).setFontSize(viewWidth < 600 ? 14 : 16).setText(this.state === 'won' ? 'CHOOSE NEXT LEVEL' : 'RESUME GAME').setVisible(true);
+        retryButtonText.setPosition(uiX(viewWidth / 2), uiY(buttonY - 13)).setScale(hudScale).setFontSize(viewWidth < 600 ? 12 : 16).setText(this.levelIndex < 2 ? 'CHOOSE NEXT LEVEL' : 'LEVEL SELECT').setVisible(true);
         secondaryButtonText.setVisible(false);
       }
     } else {
-      for (const key of ['modalTitle', 'modalBody', 'modalButtonText', 'modalSecondaryButtonText']) ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
-      this.gameResultActions?.classList.remove('is-visible');
+      for (const key of ['modalTitle', 'modalBody', 'modalButtonText', 'modalSecondaryButtonText', 'resultSeal', 'resultKicker', 'resultRewards', 'resultStatLabel0', 'resultStatLabel1', 'resultStatLabel2', 'resultStatLabel3', 'resultStatValue0', 'resultStatValue1', 'resultStatValue2', 'resultStatValue3']) ((this as any)[key] as Phaser.GameObjects.Text | undefined)?.setVisible(false);
+      if (!endState) this.gameResultActions?.classList.remove('is-visible');
       if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { row.label.setVisible(false); row.value.setVisible(false); });
     }
   }
@@ -2278,7 +2696,7 @@ class HeistScene extends Phaser.Scene {
 
 const gameHost = window as Window & { __fagioloHeistGame?: Phaser.Game };
 gameHost.__fagioloHeistGame?.destroy(true);
-document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate').forEach(element => element.remove());
+document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate, #game > .online-overlay').forEach(element => element.remove());
 gameHost.__fagioloHeistGame = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
