@@ -2,10 +2,53 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet MS", sans-serif; }
-#game { position: fixed; inset: 0; width: 100%; height: 100dvh; overflow: hidden; background: #102744; }
+#game { position: fixed; top: var(--game-visible-top, 0px); left: var(--game-visible-left, 0px); width: var(--game-visible-width, 100vw); height: var(--game-visible-height, 100dvh); overflow: hidden; background: #102744; }
+#game:fullscreen { top: 0; left: 0; width: 100vw; height: 100dvh; background: #102744; }
 /* Keep Phaser's CSS display size tied to its measured parent. Forcing 100vw/100dvh
    can make mobile browsers resample the canvas by a fractional pixel. */
 #game canvas { position: absolute; z-index: 2; inset: 0; display: block; width: 100% !important; height: 100% !important; max-width: none; max-height: none; box-shadow: none; }
+.game-crisp-overlay { position: absolute; z-index: 3; inset: 0; display: none; overflow: hidden; pointer-events: none; }
+.game-crisp-overlay.is-active { display: block; }
+.crisp-world-layer { position: absolute; z-index: 50; inset: 0; pointer-events: none; }
+.game-crisp-sprite { position: absolute; display: none; max-width: none; max-height: none; object-fit: fill; image-rendering: auto; pointer-events: none; }
+.crisp-mobile-hud { position: absolute; z-index: 100; inset: 0; color: #fffdf5; font-family: 'Nunito Sans', Arial, sans-serif; font-variant-numeric: tabular-nums; }
+.crisp-mobile-hud.is-desktop .crisp-readouts { top: clamp(14px, 2vh, 22px); right: 190px; left: 18px; height: 68px; border-color: rgba(192,222,244,.55); background: rgba(4,19,33,.9); }
+.crisp-mobile-hud.is-desktop .crisp-stat { margin: 7px 0; padding-left: 15px; border-right: 1px solid rgba(192,222,244,.2); }
+.crisp-mobile-hud.is-desktop .crisp-stat > span { font-size: 11px; letter-spacing: .12em; }
+.crisp-mobile-hud.is-desktop .crisp-stat strong { font-size: 24px; }
+.crisp-mobile-hud.is-desktop .crisp-life-stat > div { margin-top: 3px; }
+.crisp-mobile-hud.is-desktop .crisp-life-pips i { width: 9px; height: 9px; }
+.crisp-mobile-hud.is-desktop .crisp-life-stat strong { font-size: 12px; }
+.crisp-readouts { position: absolute; top: 8px; right: max(178px, calc(170px + env(safe-area-inset-right))); left: max(8px, env(safe-area-inset-left)); display: grid; height: 56px; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid rgba(192,222,244,.72); border-radius: 10px; background: rgba(4,19,33,.96); box-shadow: 0 3px 12px rgba(0,0,0,.3); }
+.crisp-stat { display: flex; min-width: 0; flex-direction: column; justify-content: center; padding-left: 8px; text-shadow: 0 1px 2px #00101c; }
+.crisp-stat > span { color: #fff; font-size: 10px; font-weight: 900; line-height: 1.1; letter-spacing: .06em; }
+.crisp-stat strong { overflow: hidden; color: #fffdf5; font: 400 20px/1.05 'Lilita One', 'Arial Black', sans-serif; text-overflow: clip; white-space: nowrap; -webkit-text-stroke: .25px #041321; }
+.crisp-stat strong.is-warning { color: #ff707c; }
+.crisp-stat .crisp-level { color: #fff1b2; }
+.crisp-life-stat > div { display: flex; align-items: center; gap: 3px; }
+.crisp-life-pips { display: flex; align-items: center; gap: 2px; }
+.crisp-life-pips i { width: 7px; height: 7px; border-radius: 50%; background: #485b78; box-shadow: 0 0 0 1px rgba(255,255,255,.16); }
+.crisp-life-pips i.is-live { background: #ff4e6d; box-shadow: 0 0 4px rgba(255,78,109,.65); }
+.crisp-stat .crisp-life-stat strong, .crisp-life-stat strong { font: 800 10px/1 'Nunito Sans', Arial, sans-serif; }
+.crisp-powerups { position: absolute; bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; display: flex; gap: 8px; transform: translateX(-50%); }
+.crisp-powerup { position: relative; display: grid; width: clamp(54px, 15vw, 62px); aspect-ratio: 1; place-items: center; border: 2px solid #ffdf88; border-radius: 15px; background: linear-gradient(155deg, #1267b7, #07396f); box-shadow: 0 4px 0 #03172b, inset 0 1px 0 rgba(255,255,255,.26); }
+.crisp-powerup b, .crisp-powerup small { display: none; }
+.crisp-powerup img { display: block; width: min(30px, 52%); height: min(30px, 52%); object-fit: contain; filter: drop-shadow(0 1px 1px rgba(0,0,0,.42)); }
+.crisp-powerup > span { position: absolute; top: 0; right: 0; display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid #fff0b6; border-radius: 50%; color: #fff; background: #062d63; font: 400 12px/1 'Lilita One', 'Arial Black', sans-serif; text-shadow: 0 1px 2px #001; }
+.crisp-speed { --crisp-accent: #ffcf22; border-color: var(--crisp-accent); }
+.crisp-cloak { --crisp-accent: #88e9ff; border-color: var(--crisp-accent); }
+.crisp-magnet { --crisp-accent: #ff3b8b; border-color: var(--crisp-accent); }
+.crisp-life { --crisp-accent: #ff536d; border-color: var(--crisp-accent); }
+.crisp-powerup > span { border-color: var(--crisp-accent, #ffdf88); }
+.crisp-mobile-hud.is-desktop .crisp-powerups { bottom: 18px; gap: 12px; }
+.crisp-mobile-hud.is-desktop .crisp-powerup { width: clamp(102px, 8vw, 122px); height: 90px; aspect-ratio: auto; grid-template-rows: 1fr auto auto; gap: 1px; padding: 5px 8px 6px; border-radius: 15px; }
+.crisp-mobile-hud.is-desktop .crisp-powerup img { width: 34px; height: 34px; align-self: center; }
+.crisp-mobile-hud.is-desktop .crisp-powerup b { display: block; color: #fff; font: 900 9px/1 'Nunito Sans', Arial, sans-serif; letter-spacing: .09em; }
+.crisp-mobile-hud.is-desktop .crisp-powerup small { display: block; color: #e8f1fa; font: 700 8px/1 'Nunito Sans', Arial, sans-serif; }
+.crisp-sign-board { position: absolute; z-index: 8; display: none; border: 4px solid #5d3015; border-radius: 12px; background: linear-gradient(145deg, #d49449 0%, #c27a32 48%, #a75c25 100%); box-shadow: inset 0 0 0 3px rgba(245,190,102,.78), inset 0 -9px 14px rgba(72,35,12,.25), 0 5px 8px rgba(0,0,0,.28); }
+.crisp-sign-board::before { position: absolute; z-index: -1; top: 100%; left: 46%; width: 8%; height: 124%; border: 3px solid #603511; border-radius: 5px; background: linear-gradient(90deg, #754018, #9a5927 42%, #603511); content: ''; }
+.crisp-sign-board::after { position: absolute; top: 8px; right: 8px; left: 8px; height: 7px; border-radius: 4px; background: radial-gradient(circle at 8px 3px, #f0bd64 0 2px, transparent 2.5px), radial-gradient(circle at calc(100% - 8px) 3px, #f0bd64 0 2px, transparent 2.5px); content: ''; }
+.crisp-sign-instructions { position: absolute; z-index: 9; display: none; color: #20160f; font: 700 15px/19px 'Trebuchet MS', Arial, sans-serif; text-align: center; text-shadow: 0 1px rgba(255,228,172,.28); white-space: nowrap; transform: translate(-50%, -50%); }
 .level-menu { position: absolute; z-index: 10; inset: 0; display: none; place-items: center; padding: 24px; color: #fff4d4; background: linear-gradient(115deg, rgba(5,15,24,.78), rgba(5,15,24,.35)); font-family: Arial, sans-serif; }
 .level-menu.is-visible { display: grid; }
 .level-panel { width: min(100%, 980px); padding: clamp(24px, 5vw, 58px); border: 1px solid rgba(227,190,111,.72); border-radius: 28px; background: linear-gradient(145deg, rgba(10,27,37,.96), rgba(15,39,46,.94)); box-shadow: 0 24px 80px rgba(0,0,0,.45); }
@@ -62,7 +105,7 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
 .level-panel { border-color: rgba(227,196,126,.58); background: linear-gradient(145deg, rgba(8,24,32,.96), rgba(13,39,44,.97)); }
 .level-card { position: relative; isolation: isolate; overflow: hidden; min-height: 190px; border-color: rgba(231,214,174,.38); background-color: #122a31; background-position: center; background-size: cover; }
 .level-card::before { position: absolute; z-index: -1; inset: 0; content: ""; background: linear-gradient(0deg, rgba(4,14,20,.94), rgba(6,19,24,.18) 90%); }
-.level-card:nth-child(1) { background-image: url('/assets/level-background-generated.png'); }
+.level-card:nth-child(1) { background-image: url('/assets/level-background-generated.webp'); }
 .level-card:nth-child(2) { background-image: url('/assets/level-2-background.webp'); }
 .level-card:nth-child(3) { background-image: url('/assets/level-3-background.webp'); }
 .level-card:not(:disabled):hover { transform: translateY(-4px); border-color: #f1d28a; }
@@ -120,7 +163,7 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
 .level-panel-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 15px; border-top: 1px solid rgba(228,211,174,.18); color: #9eafa6; font-size: 8px; font-weight: 700; letter-spacing: .18em; }
 .level-back { position: relative; margin: 0; padding: 10px 13px; border: 1px solid rgba(215,190,135,.38); border-radius: 2px; color: #e8d9b5; font-size: 8px; letter-spacing: .17em; }
 .level-back:hover { border-color: #e4c77f; color: #fff0c9; }
-.game-preloader { background: linear-gradient(0deg, rgba(6,17,22,.9), rgba(7,22,25,.58)), url('/assets/fagiolo-title-art.png') center / cover no-repeat; }
+.game-preloader { background: linear-gradient(0deg, rgba(6,17,22,.9), rgba(7,22,25,.58)), url('/assets/fagiolo-loader-world.webp') center / cover no-repeat; }
 .loader-mark { border-radius: 50%; border-color: rgba(226,192,119,.8); font: 400 29px 'Lilita One', 'Arial Black', sans-serif; }
 .loader-kicker { color: #d6c18a; font: 800 9px 'Nunito Sans', Arial, sans-serif; letter-spacing: .23em; }
 .loader-track { height: 2px; background: rgba(239,231,207,.18); }
@@ -177,7 +220,7 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
 .level-panel-footer { border-color: rgba(229,241,255,.3); color: #d2e7ff; font: 800 9px 'Nunito Sans', Arial, sans-serif; }
 .level-back { padding: 11px 16px; border: 2px solid #16386e; border-radius: 9px; color: #18355e; background: linear-gradient(#fff19c, #ffc634); box-shadow: 0 3px 0 #08285a; font: 400 11px 'Lilita One', 'Arial Black', sans-serif; letter-spacing: .08em; }
 .level-back:hover { color: #10274b; border-color: #fff5b9; }
-.game-preloader { display: block; padding: 0; overflow: hidden; background: linear-gradient(0deg, rgba(11,49,68,.15), rgba(10,46,72,.12)), url('/assets/fagiolo-loader-world.png') center / cover no-repeat; }
+.game-preloader { display: block; padding: 0; overflow: hidden; background: linear-gradient(0deg, rgba(11,49,68,.15), rgba(10,46,72,.12)), url('/assets/fagiolo-loader-world.webp') center / cover no-repeat; }
 .game-preloader::before, .game-preloader::after { display: none; }
 .loader-copy { position: absolute; top: 7vh; left: 50%; display: flex; align-items: center; gap: 15px; margin: 0; padding: 12px 24px 14px 13px; border: 2px solid rgba(16,47,89,.8); border-radius: 18px; background: linear-gradient(145deg, rgba(12,74,151,.9), rgba(7,46,108,.86)); box-shadow: 0 5px 0 rgba(6,34,78,.78), inset 0 2px 0 rgba(255,255,255,.36), 0 12px 28px rgba(6,34,78,.22); transform: translateX(-50%); white-space: nowrap; }
 .loader-avatar { width: 64px; height: 64px; flex: 0 0 64px; padding: 3px; border: 2px solid #163c73; border-radius: 50%; background: linear-gradient(145deg, #ffe989, #f3ab27); object-fit: contain; filter: drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
@@ -612,4 +655,28 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
   .game-pause-panel { padding: 27px 22px; }
   .orientation-gate-card { width: min(100%, 360px); padding: 25px 18px 18px; }
   .orientation-gate-card h2 { font-size: clamp(27px, 8vw, 36px); }
+
+  .game-result-actions { place-items: center; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
+  .game-report { width: min(100%, 520px); max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 20px); padding: 16px clamp(14px, 4vw, 20px) 14px; overflow-y: auto; overscroll-behavior: contain; border-radius: 16px; }
+  .report-topline { min-height: 30px; flex-wrap: wrap; gap: 7px; }
+  .report-brand-mark { width: 30px; height: 30px; flex-basis: 30px; }
+  .report-kicker { font-size: 8px; letter-spacing: .1em; }
+  .report-status { padding: 5px 7px; font-size: 7px; }
+  .report-heading { gap: 10px; margin: 14px 0; }
+  .report-emblem { width: 44px; height: 44px; flex-basis: 44px; border-radius: 13px; font-size: 22px; }
+  .report-heading h2 { font-size: clamp(23px, 7vw, 32px); line-height: 1; }
+  .report-heading p { margin-top: 5px; font-size: 10px; }
+  .report-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .report-stat { min-height: 62px; gap: 5px; padding: 8px 6px; border-radius: 10px; }
+  .report-stat > span { font-size: 8px; letter-spacing: .1em; }
+  .report-stat strong { font-size: clamp(18px, 5vw, 23px); }
+  .report-reward { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 5px 9px; min-height: 0; margin-top: 10px; padding: 8px 10px; }
+  .report-reward-icon { width: 30px; height: 30px; grid-row: span 2; flex-basis: 30px; }
+  .report-reward > span:nth-child(2) { min-width: 0; }
+  .report-reward b { font-size: 14px; }
+  .report-reward-extra { grid-column: 2; margin: 0; font-size: 8px; text-align: left; }
+  .report-actions { grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 12px; }
+  .report-actions button, .report-actions .report-tertiary { min-height: 43px; grid-column: 1; padding: 8px 10px; font-size: 12px; }
+  .report-footnote { margin: 9px 0 0; font-size: 8px; line-height: 1.35; }
+  .report-online-status { margin: 7px 0 -2px; font-size: 9px; }
 }

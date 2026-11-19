@@ -8,7 +8,7 @@ const FLOOR = 768;
 const RUN_TIME_SECONDS = 60;
 const LEVEL_NAMES = ['OUTER GARDENS', 'INNER RAMPARTS', 'ROYAL KEEP'] as const;
 const LEVEL_BACKGROUNDS = [
-  '/assets/level-background-generated.png',
+  '/assets/level-background-generated.webp',
   '/assets/level-2-background.webp',
   '/assets/level-3-background.webp',
 ] as const;
@@ -160,6 +160,7 @@ class HeistScene extends Phaser.Scene {
   private orientationGate?: HTMLDivElement;
   private pendingLandscapeLevel?: number;
   private orientationFrame?: number;
+  private viewportRefreshTimer?: number;
   private orientationResumeState?: 'playing' | 'paused';
   private viewOffsetX = 0;
   private viewOffsetY = 0;
@@ -234,13 +235,19 @@ class HeistScene extends Phaser.Scene {
   private musicStep = 0;
   private nextMusicTime = 0;
   private hudRefreshTimer = 0;
+  private guardLightRefreshTimer = 0;
+  private crispMobileLayer?: HTMLDivElement;
+  private crispWorldLayer?: HTMLDivElement;
+  private crispWorldNodes = new Map<string, HTMLImageElement>();
+  private crispHudNodes = new Map<string, HTMLElement>();
+  private crispSignBoard?: HTMLDivElement;
+  private crispSignInstructions?: HTMLDivElement;
+  private crispOverlayActive = false;
   private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
 
   constructor() { super('Heist'); }
 
   preload() {
-    this.load.image('title-splash', '/assets/fagiolo-title-art.png');
-    this.load.image('loader-world', '/assets/fagiolo-loader-world.png');
     const mount = document.getElementById('game');
     if (mount) {
       const existingPreloaders = Array.from(mount.querySelectorAll<HTMLDivElement>('.game-preloader'));
@@ -248,7 +255,7 @@ class HeistScene extends Phaser.Scene {
       this.preloader = preloaderFromMarkup ?? document.createElement('div');
       this.preloader.className = 'game-preloader';
       if (!preloaderFromMarkup) {
-        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="orientation-hint"><span class="orientation-phone" aria-hidden="true"></span><span class="orientation-hint-copy"><b>LANDSCAPE FOR THE BEST HEIST</b><small>Rotate your phone while Fagiolo gets ready.</small></span></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
+        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned-clean.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="orientation-hint"><span class="orientation-phone" aria-hidden="true"></span><span class="orientation-hint-copy"><b>LANDSCAPE FOR THE BEST HEIST</b><small>Rotate your phone while Fagiolo gets ready.</small></span></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned-clean.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
         mount.append(this.preloader);
       }
       // Vite/dev restarts can leave the static loader and a generated loader
@@ -268,12 +275,12 @@ class HeistScene extends Phaser.Scene {
       const route = this.preloader.querySelector('.loader-route') as HTMLElement;
       const runnerFrames = Array.from({ length: 6 }, (_, frame) => {
         const image = new Image();
-        image.src = `/assets/bean-walk-${frame}-aligned.png`;
+        image.src = `/assets/bean-walk-${frame}-aligned-clean.png`;
         return image;
       });
       const jumpFrames = Array.from({ length: 4 }, (_, frame) => {
         const image = new Image();
-        image.src = `/assets/bean-jump-${frame}-aligned.png`;
+        image.src = `/assets/bean-jump-${frame}-aligned-clean.png`;
         return image;
       });
       // Decode the jump poses during the walk so the jump does not hitch later.
@@ -285,7 +292,7 @@ class HeistScene extends Phaser.Scene {
       let loadReady = false;
       let sceneFinished = false;
       let dismissed = false;
-      const sceneDuration = 5800;
+      const sceneDuration = 4000;
       let walkStartedAt = 0;
       const finishIfReady = () => {
         if (!loadReady || !sceneFinished || dismissed) return;
@@ -304,11 +311,11 @@ class HeistScene extends Phaser.Scene {
         const walkElapsed = Math.min(sceneDuration, now - walkStartedAt);
         const smoothStep = (value: number) => value * value * (3 - 2 * value);
         let progress: number;
-        if (elapsed < 2400) progress = 0.42 * smoothStep(elapsed / 2400);
-        else if (elapsed < 3000) progress = 0.42 + 0.16 * smoothStep((elapsed - 2400) / 600);
-        else progress = 0.58 + 0.42 * smoothStep((elapsed - 3000) / (sceneDuration - 3000));
+        if (elapsed < 1800) progress = 0.42 * smoothStep(elapsed / 1800);
+        else if (elapsed < 2400) progress = 0.42 + 0.16 * smoothStep((elapsed - 1800) / 600);
+        else progress = 0.58 + 0.42 * smoothStep((elapsed - 2400) / (sceneDuration - 2400));
 
-        if (!jumpPlayed && walkElapsed >= 2400) {
+        if (!jumpPlayed && walkElapsed >= 1800) {
           jumpPlayed = true;
           jumping = true;
           jumpStartedAt = walkElapsed;
@@ -372,17 +379,17 @@ class HeistScene extends Phaser.Scene {
         finishIfReady();
       });
     }
-    this.load.image('level-background', '/assets/level-background-generated.png');
+    this.load.image('level-background', '/assets/level-background-generated.webp');
     this.load.image('level-2-background', '/assets/level-2-background.webp');
     this.load.image('level-3-background', '/assets/level-3-background.webp');
     for (let frame = 0; frame < 3; frame++) {
-      this.load.image(`bean-idle-${frame}`, `/assets/bean-idle-${frame}-aligned.png`);
+      this.load.image(`bean-idle-${frame}`, `/assets/bean-idle-${frame}-aligned-clean.png`);
     }
     for (let frame = 0; frame < 6; frame++) {
-      this.load.image(`bean-walk-${frame}`, `/assets/bean-walk-${frame}-aligned.png`);
+      this.load.image(`bean-walk-${frame}`, `/assets/bean-walk-${frame}-aligned-clean.png`);
     }
     for (let frame = 0; frame < 4; frame++) {
-      this.load.image(`bean-jump-${frame}`, `/assets/bean-jump-${frame}-aligned.png`);
+      this.load.image(`bean-jump-${frame}`, `/assets/bean-jump-${frame}-aligned-clean.png`);
     }
     this.load.image('bean-coin', '/assets/bean-coin-optimized.png');
     this.load.image('prop-spikes', '/assets/prop-spikes.png');
@@ -467,7 +474,7 @@ class HeistScene extends Phaser.Scene {
     this.titleLayer.setVisible(false);
     const landing = document.createElement('div');
     landing.className = 'landing-menu is-visible';
-    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span><span class="nav-caption">FAGIOLO HEIST</span><span class="nav-chip">A SNEAKY PLATFORMER</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> SNEAK IN. GET THE BEANS. GET OUT.</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">Slip past the guards, dodge castle traps and collect beans on your way to the treasure.</p><button class="landing-cta" type="button"><span>CHOOSE A LEVEL</span><b>→</b></button></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>LEAP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">ESC <b>PAUSES</b></span></footer>`;
+    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned-clean.png" alt="Fagiolo"></span><span class="nav-caption">FAGIOLO HEIST</span><span class="nav-chip">A SNEAKY PLATFORMER</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> SNEAK IN. GET THE BEANS. GET OUT.</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">Slip past the guards, dodge castle traps and collect beans on your way to the treasure.</p><button class="landing-cta" type="button"><span>CHOOSE A LEVEL</span><b>→</b></button></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>LEAP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">ESC <b>PAUSES</b></span></footer>`;
     document.getElementById('game')?.append(landing);
     this.landingMenu = landing;
     this.setLandingBackdrop();
@@ -478,7 +485,7 @@ class HeistScene extends Phaser.Scene {
     });
     const levelMenu = document.createElement('div');
     levelMenu.className = 'level-menu';
-    levelMenu.innerHTML = `<section class="level-panel"><header class="level-heading"><div><p class="level-kicker">THE CASTLE · THREE WINGS</p><h1>Choose your route</h1><p class="level-intro">Each wing has its own watch, its own hazards, and a way through.</p></div><span class="level-seal"><img src="/assets/bean-idle-0-aligned.png" alt="Fagiolo"></span></header><div class="level-cards"></div><footer class="level-panel-footer"><span>COMPLETE A WING TO OPEN THE NEXT</span><button class="level-back" type="button">RETURN TO TITLE</button></footer></section>`;
+    levelMenu.innerHTML = `<section class="level-panel"><header class="level-heading"><div><p class="level-kicker">THE CASTLE · THREE WINGS</p><h1>Choose your route</h1><p class="level-intro">Each wing has its own watch, its own hazards, and a way through.</p></div><span class="level-seal"><img src="/assets/bean-idle-0-aligned-clean.png" alt="Fagiolo"></span></header><div class="level-cards"></div><footer class="level-panel-footer"><span>COMPLETE A WING TO OPEN THE NEXT</span><button class="level-back" type="button">RETURN TO TITLE</button></footer></section>`;
     document.getElementById('game')?.append(levelMenu);
     this.levelMenu = levelMenu;
     const cards = levelMenu.querySelector('.level-cards') as HTMLDivElement;
@@ -543,6 +550,7 @@ class HeistScene extends Phaser.Scene {
       .setDepth(2)
       .setVisible(false));
     this.coinSprites = this.coins.map(c => this.add.image(c.x, c.y, 'bean-coin').setDisplaySize(48, 36).setDepth(2).setVisible(false));
+    this.createCrispMobileOverlay();
     this.refillSprite = this.add.image(this.refillPickup.x, this.refillPickup.y, 'prop-chest-0').setDisplaySize(72, 54).setDepth(3).setVisible(false);
     this.extraLifePickupSprite = this.add.image(this.extraLifePickup.x, this.extraLifePickup.y, 'power-life').setDisplaySize(48, 48).setDepth(3).setVisible(false);
     this.signText = this.add.text(133, 497, 'MOVE: A/D OR ARROWS\nJUMP: W / SPACE / UP\nBEANS = SCORE\nCHEST = EXIT', { fontFamily: 'Trebuchet MS', fontSize: '15px', fontStyle: 'bold', color: '#20160f', align: 'center', lineSpacing: 4 }).setResolution(this.gameplayTextResolution()).setOrigin(.5).setDepth(4).setVisible(false);
@@ -591,7 +599,7 @@ class HeistScene extends Phaser.Scene {
 
     const resultActions = document.createElement('div');
     resultActions.className = 'game-result-actions';
-    resultActions.innerHTML = `<section class="game-report" role="dialog" aria-modal="true" aria-labelledby="game-report-title"><div class="report-topline"><span class="report-brand-mark" aria-hidden="true"><img src="/assets/bean-idle-0-aligned.png" alt=""></span><span class="report-kicker">HEIST REPORT <i></i> LEVEL <b data-report-level>1</b></span><span class="report-status" data-report-status>RUN COMPLETE</span></div><header class="report-heading"><span class="report-emblem" data-report-emblem aria-hidden="true">★</span><div><h2 id="game-report-title" data-report-title>ESCAPE COMPLETE</h2><p data-report-subtitle>Fagiolo got away with the goods.</p></div></header><div class="report-stats"><article class="report-stat report-stat-score"><span>SCORE</span><strong data-report-score>00000</strong></article><article class="report-stat"><span>BEANS</span><strong data-report-beans>00 / 00</strong></article><article class="report-stat"><span>TIME LEFT</span><strong data-report-time>00:00</strong></article><article class="report-stat"><span>LIVES</span><strong data-report-lives>0 / 4</strong></article></div><div class="report-reward"><span class="report-reward-icon" aria-hidden="true">✦</span><span><small data-report-reward-kicker>LEVEL REWARD</small><b data-report-reward>CHEST +500</b></span><span class="report-reward-extra" data-report-extra>BEAN BONUS +500</span></div><footer class="report-actions"><button class="report-primary" type="button" data-result="primary">PLAY NEXT LEVEL</button><button class="report-secondary" type="button" data-result="levels">LEVEL SELECT</button></footer><p class="report-footnote" data-report-footnote>Every bean brings you closer to the perfect escape.</p></section>`;
+    resultActions.innerHTML = `<section class="game-report" role="dialog" aria-modal="true" aria-labelledby="game-report-title"><div class="report-topline"><span class="report-brand-mark" aria-hidden="true"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><span class="report-kicker">HEIST REPORT <i></i> LEVEL <b data-report-level>1</b></span><span class="report-status" data-report-status>RUN COMPLETE</span></div><header class="report-heading"><span class="report-emblem" data-report-emblem aria-hidden="true">★</span><div><h2 id="game-report-title" data-report-title>ESCAPE COMPLETE</h2><p data-report-subtitle>Fagiolo got away with the goods.</p></div></header><div class="report-stats"><article class="report-stat report-stat-score"><span>SCORE</span><strong data-report-score>00000</strong></article><article class="report-stat"><span>BEANS</span><strong data-report-beans>00 / 00</strong></article><article class="report-stat"><span>TIME LEFT</span><strong data-report-time>00:00</strong></article><article class="report-stat"><span>LIVES</span><strong data-report-lives>0 / 4</strong></article></div><div class="report-reward"><span class="report-reward-icon" aria-hidden="true">✦</span><span><small data-report-reward-kicker>LEVEL REWARD</small><b data-report-reward>CHEST +500</b></span><span class="report-reward-extra" data-report-extra>BEAN BONUS +500</span></div><footer class="report-actions"><button class="report-primary" type="button" data-result="primary">PLAY NEXT LEVEL</button><button class="report-secondary" type="button" data-result="levels">LEVEL SELECT</button></footer><p class="report-footnote" data-report-footnote>Every bean brings you closer to the perfect escape.</p></section>`;
     mount.append(resultActions);
     this.gameResultActions = resultActions;
     const primaryButton = resultActions.querySelector<HTMLButtonElement>('[data-result="primary"]');
@@ -682,8 +690,17 @@ class HeistScene extends Phaser.Scene {
       this.pendingLandscapeLevel = undefined;
       this.hideOrientationGate();
     });
-    window.addEventListener('resize', () => this.handleOrientationChange(), { passive: true });
-    window.addEventListener('orientationchange', () => this.handleOrientationChange(), { passive: true });
+    window.addEventListener('resize', () => {
+      this.handleOrientationChange();
+      this.queueViewportRefresh();
+    }, { passive: true });
+    window.addEventListener('orientationchange', () => {
+      this.handleOrientationChange();
+      this.queueViewportRefresh();
+    }, { passive: true });
+    window.visualViewport?.addEventListener('resize', () => this.queueViewportRefresh(), { passive: true });
+    document.addEventListener('fullscreenchange', () => this.queueViewportRefresh());
+    this.syncVisibleGameArea();
 
     if (this.touchControlsVisible) {
       const touch = document.createElement('div');
@@ -745,7 +762,7 @@ class HeistScene extends Phaser.Scene {
     const overlay = document.createElement('div');
     overlay.className = 'online-overlay';
     overlay.setAttribute('aria-hidden', 'true');
-    overlay.innerHTML = `<section class="online-panel" role="dialog" aria-modal="true" aria-labelledby="online-title"><header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header><div class="online-auth-view" data-online-auth-view><p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p><form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Player name<input name="username" type="text" minlength="3" maxlength="18" pattern="[A-Za-z0-9_]{3,18}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Email<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your player name appears publicly on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form><div class="online-member-view" data-online-member hidden><p class="online-member-name" data-online-member-name></p><p class="online-intro">Your best completed score for each level is saved to your account.</p><button class="online-submit online-signout" type="button" data-auth-signout>SIGN OUT</button></div><p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button></div><div class="online-board-view" data-online-board-view hidden><p class="online-intro">Best completed run per player · score, beans, then fastest time.</p><div class="online-level-tabs" role="tablist" aria-label="Leaderboard level"><button type="button" data-board-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-board-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-board-level="3" aria-selected="false">LEVEL 3</button></div><div class="online-board-head"><span>RANK / PLAYER</span><span>SCORE</span><span>BEANS</span><span>TIME</span></div><ol class="online-board-list" data-board-list></ol><p class="online-notice" data-board-notice role="status" aria-live="polite"></p><button class="online-submit online-board-signin" type="button" data-board-signin>CREATE ACCOUNT / SIGN IN</button></div></section>`;
+    overlay.innerHTML = `<section class="online-panel" role="dialog" aria-modal="true" aria-labelledby="online-title"><header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header><div class="online-auth-view" data-online-auth-view><p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p><form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Player name<input name="username" type="text" minlength="3" maxlength="18" pattern="[A-Za-z0-9_]{3,18}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Email<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your player name appears publicly on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form><div class="online-member-view" data-online-member hidden><p class="online-member-name" data-online-member-name></p><p class="online-intro">Your best completed score for each level is saved to your account.</p><button class="online-submit online-signout" type="button" data-auth-signout>SIGN OUT</button></div><p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button></div><div class="online-board-view" data-online-board-view hidden><p class="online-intro">Best completed run per player · score, beans, then fastest time.</p><div class="online-level-tabs" role="tablist" aria-label="Leaderboard level"><button type="button" data-board-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-board-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-board-level="3" aria-selected="false">LEVEL 3</button></div><div class="online-board-head"><span>RANK / PLAYER</span><span>SCORE</span><span>BEANS</span><span>TIME</span></div><ol class="online-board-list" data-board-list></ol><p class="online-notice" data-board-notice role="status" aria-live="polite"></p><button class="online-submit online-board-signin" type="button" data-board-signin>CREATE ACCOUNT / SIGN IN</button></div></section>`;
     mount.append(overlay);
     this.onlineOverlay = overlay;
     const close = () => {
@@ -932,6 +949,21 @@ class HeistScene extends Phaser.Scene {
     return this.touchControlsVisible && window.matchMedia('(orientation: portrait)').matches;
   }
 
+  private queueViewportRefresh() {
+    if (this.viewportRefreshTimer !== undefined) window.clearTimeout(this.viewportRefreshTimer);
+    // Some mobile browsers update the visual viewport and safe areas a frame
+    // after orientationchange. Re-read the parent size once that transition settles.
+    this.viewportRefreshTimer = window.setTimeout(() => {
+      this.viewportRefreshTimer = undefined;
+      this.syncVisibleGameArea();
+      this.scale.refresh();
+    }, 120);
+  }
+
+  private syncVisibleGameArea() {
+    syncVisibleGameArea();
+  }
+
   private handleOrientationChange() {
     if (this.orientationFrame !== undefined) window.cancelAnimationFrame(this.orientationFrame);
     this.orientationFrame = window.requestAnimationFrame(() => {
@@ -1083,6 +1115,7 @@ class HeistScene extends Phaser.Scene {
 
   private returnToTitle() {
     this.state = 'title';
+    this.setCrispOverlayActive(false);
     this.settingsOpen = false;
     this.refillChoicePending = false;
     this.refillChoiceMenu?.classList.remove('is-visible');
@@ -1140,7 +1173,7 @@ class HeistScene extends Phaser.Scene {
     if (!gameSurface) return;
     const portraitPhone = window.matchMedia('(orientation: portrait)').matches && window.innerWidth <= 760;
     gameSurface.style.backgroundColor = '#102744';
-    gameSurface.style.backgroundImage = "url('/assets/fagiolo-landing-art.png')";
+    gameSurface.style.backgroundImage = "url('/assets/fagiolo-landing-art.webp')";
     gameSurface.style.backgroundRepeat = 'no-repeat';
     gameSurface.style.backgroundPosition = portraitPhone ? '58% center' : '62% center';
     gameSurface.style.backgroundSize = portraitPhone ? 'auto 100%' : '115% auto';
@@ -1382,6 +1415,7 @@ class HeistScene extends Phaser.Scene {
     this.guards.forEach(guard => { guard.x = guard.spawnX; guard.y = guard.spawnY; guard.direction = guard.spawnDirection; guard.velocity = guard.direction * 76; guard.mode = 'patrol'; guard.timer = 0; guard.turning = false; guard.lastSeenX = guard.x; guard.anim = 0; guard.gait = 0; });
     this.state = 'playing';
     this.hudRefreshTimer = 0;
+    this.guardLightRefreshTimer = 0;
     this.gameTopControls?.classList.add('is-visible');
     this.touchControlMenu?.classList.toggle('is-visible', this.touchControlsVisible);
     this.pauseMenu?.classList.remove('is-visible');
@@ -1449,9 +1483,10 @@ class HeistScene extends Phaser.Scene {
     this.cameras.main.stopFollow();
     this.cameras.main.setViewport(0, 0, this.scale.width, this.scale.height);
     this.cameras.main.setBounds(levelStart, 0, levelEnd - levelStart, H);
-    this.cameras.main.setScroll(levelStart, 0);
     const shortLandscapeTouch = this.isShortLandscapeTouch();
+    this.cameras.main.setScroll(levelStart, 0);
     this.cameras.main.startFollow(this.heroSprite, true, 0.12, shortLandscapeTouch ? 0.12 : 0.08);
+    this.setCrispOverlayActive(window.devicePixelRatio > 1.01);
     const goalX = levelEnd - 110;
     this.chestSprites[0].setPosition(goalX, FLOOR).setVisible(true).setTexture('prop-chest-0');
     this.chestSprites[1].setVisible(false);
@@ -1522,6 +1557,257 @@ class HeistScene extends Phaser.Scene {
     this.levelBanner?.setPosition(viewWidth / 2, 145 + this.viewOffsetY);
     this.modalButtonZone?.setPosition(viewWidth / 2, viewHeight / 2 + 142);
     if (this.state === 'title') this.setLandingBackdrop();
+    const crispModeChanged = this.setCrispOverlayActive(this.state !== 'title' && window.devicePixelRatio > 1.01);
+    if (crispModeChanged && this.state !== 'title') {
+      this.drawStaticWorld();
+      this.drawWorld();
+      this.drawHud(this.state !== 'playing');
+    }
+  }
+
+  private createCrispMobileOverlay() {
+    const mount = document.getElementById('game');
+    if (!mount) return;
+    mount.querySelector('.game-crisp-overlay')?.remove();
+    const layer = document.createElement('div');
+    layer.className = 'game-crisp-overlay';
+    layer.setAttribute('aria-hidden', 'true');
+    layer.innerHTML = `<div class="crisp-mobile-hud">
+      <div class="crisp-readouts">
+        <div class="crisp-stat"><span>SCORE</span><strong data-crisp-stat="score">00000</strong></div>
+        <div class="crisp-stat"><span>TIME</span><strong data-crisp-stat="time">00:00</strong></div>
+        <div class="crisp-stat"><span>BEANS</span><strong data-crisp-stat="beans">0/0</strong></div>
+        <div class="crisp-stat crisp-life-stat"><span>LIVES</span><div><span class="crisp-life-pips" data-crisp-stat="life-pips"><i></i><i></i><i></i><i></i></span><strong data-crisp-stat="lives">3/4</strong></div></div>
+        <div class="crisp-stat"><span>LEVEL</span><strong class="crisp-level" data-crisp-stat="level">1/3</strong></div>
+      </div>
+      <div class="crisp-powerups">
+        <div class="crisp-powerup crisp-speed"><img src="/assets/power-speed.png" alt=""><span data-crisp-charge="0">1</span><b>SPEED</b><small data-crisp-status="0">1 CHARGE</small></div>
+        <div class="crisp-powerup crisp-cloak"><img src="/assets/power-cloak.png" alt=""><span data-crisp-charge="1">1</span><b>CLOAK</b><small data-crisp-status="1">1 CHARGE</small></div>
+        <div class="crisp-powerup crisp-magnet"><img src="/assets/power-magnet.png" alt=""><span data-crisp-charge="2">1</span><b>MAGNET</b><small data-crisp-status="2">1 CHARGE</small></div>
+        <div class="crisp-powerup crisp-life"><img src="/assets/power-life.png" alt=""><span data-crisp-charge="3">0</span><b>EXTRA LIFE</b><small data-crisp-status="3">FIND</small></div>
+      </div>
+    </div>
+    <div class="crisp-world-layer">
+      <div class="crisp-sign-board" aria-hidden="true"></div>
+      <div class="crisp-sign-instructions" aria-hidden="true">MOVE: A/D OR ARROWS<br>JUMP: W / SPACE / UP<br>BEANS = SCORE<br>CHEST = EXIT</div>
+    </div>
+    `;
+    mount.append(layer);
+    this.crispMobileLayer = layer;
+    this.crispWorldLayer = layer.querySelector<HTMLDivElement>('.crisp-world-layer') ?? undefined;
+    layer.querySelectorAll<HTMLElement>('[data-crisp-stat]').forEach(node => this.crispHudNodes.set(node.dataset.crispStat!, node));
+    layer.querySelectorAll<HTMLElement>('[data-crisp-charge]').forEach(node => this.crispHudNodes.set(`charge-${node.dataset.crispCharge}`, node));
+    layer.querySelectorAll<HTMLElement>('[data-crisp-status]').forEach(node => this.crispHudNodes.set(`status-${node.dataset.crispStatus}`, node));
+    this.crispSignBoard = layer.querySelector<HTMLDivElement>('.crisp-sign-board') ?? undefined;
+    this.crispSignInstructions = layer.querySelector<HTMLDivElement>('.crisp-sign-instructions') ?? undefined;
+
+    const addSpriteNode = (key: string, className: string) => {
+      const node = document.createElement('img');
+      node.className = `game-crisp-sprite ${className}`;
+      node.alt = '';
+      node.draggable = false;
+      node.setAttribute('aria-hidden', 'true');
+      this.crispWorldLayer?.append(node);
+      this.crispWorldNodes.set(key, node);
+    };
+    addSpriteNode('hero', 'crisp-hero');
+    this.guardSprites.forEach((_, index) => addSpriteNode(`guard-${index}`, 'crisp-guard'));
+    this.coinSprites.forEach((_, index) => addSpriteNode(`coin-${index}`, 'crisp-coin'));
+    this.chestSprites.forEach((_, index) => addSpriteNode(`chest-${index}`, 'crisp-chest'));
+    this.worldPropSprites.forEach((_, index) => addSpriteNode(`prop-${index}`, 'crisp-prop'));
+    this.spikeSprites.forEach((_, index) => addSpriteNode(`spike-${index}`, 'crisp-spike'));
+    this.laserPostSprites.forEach((pair, gateIndex) => pair.forEach((_, postIndex) => addSpriteNode(`laser-${gateIndex}-${postIndex}`, 'crisp-laser-post')));
+    addSpriteNode('refill', 'crisp-refill');
+    addSpriteNode('extra-life', 'crisp-extra-life');
+  }
+
+  private setCrispOverlayActive(active: boolean) {
+    if (this.crispOverlayActive === active) return false;
+    this.crispOverlayActive = active;
+    this.crispMobileLayer?.classList.toggle('is-active', active);
+    if (!active) this.crispWorldNodes.forEach(node => { node.style.display = 'none'; });
+    return true;
+  }
+
+  private crispAssetFor(textureKey: string) {
+    if (/^bean-(?:idle|walk|jump)-\d+$/.test(textureKey)) return `/assets/${textureKey}-aligned-clean.png`;
+    if (/^guard-walk-\d+$/.test(textureKey)) return `/assets/${textureKey}-aligned.png`;
+    if (textureKey === 'guard-idle') return '/assets/guard-idle-aligned.png';
+    if (textureKey === 'guard-stunned') return '/assets/guard-stunned-aligned.png';
+    if (/^prop-chest-[0-3]$/.test(textureKey)) return `/assets/${textureKey}.png`;
+    if (textureKey === 'bean-coin') return '/assets/bean-coin-optimized.png';
+    if (textureKey === 'prop-crate' || textureKey === 'prop-barrel' || textureKey === 'prop-spikes' || textureKey === 'prop-laser-post') return `/assets/${textureKey}.png`;
+    if (textureKey === 'power-life') return '/assets/power-life.png';
+    return undefined;
+  }
+
+  private placeCrispSprite(key: string, sprite: Phaser.GameObjects.Image, visible: boolean) {
+    const node = this.crispWorldNodes.get(key);
+    if (!node) return;
+    const asset = this.crispAssetFor(sprite.texture.key);
+    if (!visible || !asset) {
+      node.style.display = 'none';
+      return;
+    }
+    if (node.dataset.asset !== asset) {
+      node.src = asset;
+      node.dataset.asset = asset;
+    }
+    const camera = this.cameras.main;
+    const worldX = sprite.x - camera.scrollX * sprite.scrollFactorX;
+    const worldY = sprite.y - camera.scrollY * sprite.scrollFactorY;
+    const screen = camera.matrix.transformPoint(worldX, worldY);
+    const width = sprite.displayWidth * camera.zoomX;
+    const height = sprite.displayHeight * camera.zoomY;
+    node.style.display = 'block';
+    node.style.left = `${screen.x - sprite.originX * width}px`;
+    node.style.top = `${screen.y - sprite.originY * height}px`;
+    node.style.width = `${width}px`;
+    node.style.height = `${height}px`;
+    node.style.opacity = String(sprite.alpha);
+    node.style.zIndex = String(Math.round(sprite.depth * 10));
+    node.style.transformOrigin = `${sprite.originX * 100}% ${sprite.originY * 100}%`;
+    node.style.transform = `${sprite.flipX ? 'scaleX(-1) ' : ''}rotate(${sprite.rotation}rad)`;
+    const tint = (sprite as Phaser.GameObjects.Image & { tintTopLeft?: number }).tintTopLeft;
+    node.style.filter = tint === 0xffbc55
+      ? 'sepia(1) saturate(3) hue-rotate(350deg)'
+      : tint === 0x778393 ? 'grayscale(.72) brightness(.78)'
+        : tint === 0xff5048 ? 'sepia(1) saturate(5) hue-rotate(300deg)' : '';
+  }
+
+  private syncCrispWorldSprites() {
+    if (!this.crispOverlayActive) {
+      this.crispWorldNodes.forEach(node => { node.style.display = 'none'; });
+      if (this.crispSignBoard) this.crispSignBoard.style.display = 'none';
+      if (this.crispSignInstructions) this.crispSignInstructions.style.display = 'none';
+      if (this.state !== 'title') {
+        this.signText?.setVisible(true);
+        this.heroSprite?.setVisible((this.hurtTimer <= 0 || Math.floor(this.animTime * 18) % 2 === 0)
+          && (this.invisibilityTimer <= 0 || Math.floor(this.animTime * 12) % 2 === 0));
+        this.guardSprites.forEach((sprite, index) => sprite.setVisible(index < this.guards.length));
+        this.chestSprites[0]?.setVisible(true);
+        this.chestSprites[1]?.setVisible(false);
+        this.worldPropSprites.forEach((sprite, index) => sprite.setVisible(index < this.crates.length
+          ? !this.crates[index]?.broken : this.barrel.x >= 0));
+        this.laserPostSprites.forEach(pair => pair.forEach(post => post.setVisible(true)));
+        this.spikeSprites.forEach((sprite, index) => sprite.setVisible(index < this.spikeHazards.length));
+        this.coinSprites.forEach((sprite, index) => sprite.setVisible(!this.coins[index]?.taken && !this.coins[index]?.locked));
+        this.refillSprite?.setVisible(!this.refillPickup.taken);
+        this.extraLifePickupSprite?.setVisible(!this.extraLifePickup.taken);
+      }
+      return;
+    }
+
+    const heroVisible = (this.hurtTimer <= 0 || Math.floor(this.animTime * 18) % 2 === 0)
+      && (this.invisibilityTimer <= 0 || Math.floor(this.animTime * 12) % 2 === 0);
+    this.placeCrispSprite('hero', this.heroSprite, heroVisible);
+    this.heroSprite.setVisible(false);
+    this.guardSprites.forEach((sprite, index) => {
+      this.placeCrispSprite(`guard-${index}`, sprite, index < this.guards.length);
+      sprite.setVisible(false);
+    });
+    this.chestSprites.forEach((sprite, index) => {
+      this.placeCrispSprite(`chest-${index}`, sprite, index === 0);
+      sprite.setVisible(false);
+    });
+    this.worldPropSprites.forEach((sprite, index) => {
+      const visible = index < this.crates.length ? !this.crates[index]?.broken : this.barrel.x >= 0;
+      this.placeCrispSprite(`prop-${index}`, sprite, visible);
+      sprite.setVisible(false);
+    });
+    this.spikeSprites.forEach((sprite, index) => {
+      this.placeCrispSprite(`spike-${index}`, sprite, index < this.spikeHazards.length);
+      sprite.setVisible(false);
+    });
+    this.laserPostSprites.forEach((pair, gateIndex) => pair.forEach((sprite, postIndex) => {
+      this.placeCrispSprite(`laser-${gateIndex}-${postIndex}`, sprite, gateIndex < this.laserGates.length);
+      sprite.setVisible(false);
+    }));
+    if (this.refillSprite) {
+      this.placeCrispSprite('refill', this.refillSprite, !this.refillPickup.taken);
+      this.refillSprite.setVisible(false);
+    }
+    if (this.extraLifePickupSprite) {
+      this.placeCrispSprite('extra-life', this.extraLifePickupSprite, !this.extraLifePickup.taken);
+      this.extraLifePickupSprite.setVisible(false);
+    }
+    this.coinSprites.forEach((sprite, index) => {
+      const coin = this.coins[index];
+      this.placeCrispSprite(`coin-${index}`, sprite, !!coin && !coin.taken && !coin.locked);
+      sprite.setVisible(false);
+    });
+    this.signText.setVisible(false);
+    const camera = this.cameras.main;
+    const mobileSignScale = this.isShortLandscapeTouch() ? 0.68 : 1;
+    if (this.crispWorldLayer) this.crispWorldLayer.style.clipPath = 'none';
+    const boardCenter = camera.matrix.transformPoint(135 - camera.scrollX, 509 - camera.scrollY);
+    const boardWidth = 198 * camera.zoomX * mobileSignScale;
+    const boardHeight = 154 * camera.zoomY * mobileSignScale;
+    const textCenter = camera.matrix.transformPoint(this.signText.x - camera.scrollX, this.signText.y - camera.scrollY);
+    const mobileBoardDrop = this.isShortLandscapeTouch()
+      ? Math.max(64, 88 - (boardCenter.y - boardHeight / 2))
+      : 0;
+    if (this.crispSignBoard) {
+      this.crispSignBoard.style.display = 'block';
+      this.crispSignBoard.style.left = `${boardCenter.x - boardWidth / 2}px`;
+      this.crispSignBoard.style.top = `${boardCenter.y - boardHeight / 2 + mobileBoardDrop}px`;
+      this.crispSignBoard.style.width = `${boardWidth}px`;
+      this.crispSignBoard.style.height = `${boardHeight}px`;
+    }
+    if (this.crispSignInstructions) {
+      this.crispSignInstructions.style.display = 'block';
+      const compactMobileText = this.isShortLandscapeTouch();
+      this.crispSignInstructions.innerHTML = compactMobileText
+        ? 'MOVE: ← / →<br>JUMP: ↑<br>BEANS = SCORE<br>CHEST = EXIT'
+        : 'MOVE: A/D OR ARROWS<br>JUMP: W / SPACE / UP<br>BEANS = SCORE<br>CHEST = EXIT';
+      this.crispSignInstructions.style.left = `${textCenter.x}px`;
+      this.crispSignInstructions.style.top = `${textCenter.y + mobileBoardDrop}px`;
+      this.crispSignInstructions.style.width = `${184 * camera.zoomX * mobileSignScale}px`;
+      this.crispSignInstructions.style.fontSize = `${compactMobileText ? Math.max(8, 14 * camera.zoomY * mobileSignScale) : 15 * camera.zoomY}px`;
+      this.crispSignInstructions.style.lineHeight = `${compactMobileText ? Math.max(9, 17 * camera.zoomY * mobileSignScale) : 19 * camera.zoomY}px`;
+    }
+  }
+
+  private syncCrispHud() {
+    if (!this.crispOverlayActive) return;
+    const setStat = (key: string, value: string) => {
+      const node = this.crispHudNodes.get(key);
+      if (node) node.textContent = value;
+    };
+    const collected = this.coins.filter(coin => coin.taken).length;
+    setStat('score', String(this.score).padStart(5, '0'));
+    setStat('time', `${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
+    setStat('beans', `${collected}/${this.coins.length}`);
+    setStat('lives', `${this.lives}/4`);
+    setStat('level', `${this.levelIndex + 1}/3`);
+    this.crispHudNodes.get('time')?.classList.toggle('is-warning', this.timeLeft <= 15);
+    const pips = this.crispHudNodes.get('life-pips');
+    pips?.querySelectorAll('i').forEach((pip, index) => pip.classList.toggle('is-live', index < this.lives));
+    [this.powerupCharges[0], this.powerupCharges[1], this.powerupCharges[2], Number(this.extraLifeAvailable)].forEach((count, index) => {
+      const node = this.crispHudNodes.get(`charge-${index}`);
+      if (node) node.textContent = String(count);
+    });
+    const compactMobile = this.isShortLandscapeTouch();
+    this.crispMobileLayer?.querySelector('.crisp-mobile-hud')?.classList.toggle('is-desktop', !compactMobile);
+    const activeTimes = [this.speedTimer, this.invisibilityTimer, this.magnetTimer];
+    activeTimes.forEach((remaining, index) => {
+      const status = this.crispHudNodes.get(`status-${index}`);
+      if (status) status.textContent = remaining > 0
+        ? `${Math.ceil(remaining)}s ACTIVE`
+        : `${this.powerupCharges[index]} CHARGE${this.powerupCharges[index] === 1 ? '' : 'S'}`;
+    });
+    const lifeStatus = this.crispHudNodes.get('status-3');
+    if (lifeStatus) lifeStatus.textContent = this.extraLifeAvailable ? 'READY' : 'FIND';
+    const lifePowerup = this.crispMobileLayer?.querySelector<HTMLElement>('.crisp-life');
+    if (lifePowerup) lifePowerup.style.opacity = this.extraLifeAvailable ? '1' : '.48';
+
+    this.hud.setVisible(false);
+    for (const key of ['scoreLabel', 'scoreText', 'timerLabel', 'timerText', 'livesLabel', 'livesCount', 'coinsLabel', 'coinsText', 'routeLabel', 'routeValue']) {
+      (this as any)[key]?.setVisible(false);
+    }
+    for (const groupName of ['powerupLabels', 'powerupStatus']) (this as any)[groupName]?.forEach((text: Phaser.GameObjects.Text) => text.setVisible(false));
+    this.powerupSprites.forEach(sprite => sprite.setVisible(false));
+    this.powerupChargeTexts.forEach(text => text.setVisible(false));
   }
 
   private isShortLandscapeTouch(width = this.scale.width, height = this.scale.height) {
@@ -1655,6 +1941,7 @@ class HeistScene extends Phaser.Scene {
     const dt = Math.min(delta / 1000, 0.04);
     this.elapsed += dt;
     this.animTime += dt;
+    this.guardLightRefreshTimer = Math.max(0, this.guardLightRefreshTimer - dt);
     this.hurtTimer = Math.max(0, this.hurtTimer - dt);
     this.speedTimer = Math.max(0, this.speedTimer - dt);
     this.invisibilityTimer = Math.max(0, this.invisibilityTimer - dt);
@@ -1989,7 +2276,13 @@ class HeistScene extends Phaser.Scene {
       this.updateLaserPosts(i, mode);
     }
     this.spikeHazards.forEach((hazard, i) => {
-      this.updateSpikeVisual(this.spikeSprites[i], hazard);
+      const sprite = this.spikeSprites[i];
+      if (hazard.x < cameraLeft - 100 || hazard.x > cameraRight + 100) {
+        sprite.setVisible(false);
+        return;
+      }
+      sprite.setVisible(true);
+      this.updateSpikeVisual(sprite, hazard);
       const phase = this.getSpikePhase(hazard);
       if (phase >= 3.65 && phase < 4.15) {
         const pulse = (Math.sin(this.animTime * 20) + 1) / 2;
@@ -1999,8 +2292,12 @@ class HeistScene extends Phaser.Scene {
         g.lineBetween(hazard.x - 42, hazard.surfaceY - 9, hazard.x + 42, hazard.surfaceY - 9);
       }
     });
-    this.chestSprites[0].setTexture(`prop-chest-${this.getChestFrame()}`);
-    this.drawGuardLights();
+    const chestFrame = `prop-chest-${this.getChestFrame()}`;
+    if (this.chestSprites[0].texture.key !== chestFrame) this.chestSprites[0].setTexture(chestFrame);
+    if (!this.isShortLandscapeTouch() || this.guardLightRefreshTimer <= 0) {
+      this.drawGuardLights();
+      this.guardLightRefreshTimer = this.isShortLandscapeTouch() ? 1 / 30 : 0;
+    }
     // Each standalone level contains only its own guards, while guardSprites
     // is allocated once for the full original course. Iterate the active
     // guards so a missing guard cannot throw and abort drawing Fagiolo and HUD.
@@ -2013,12 +2310,13 @@ class HeistScene extends Phaser.Scene {
       g.fillStyle(0x173260, 1); g.fillRoundedRect(guard.x - 2, guard.y - 149, 4, 12, 2); g.fillCircle(guard.x, guard.y - 132, 2);
     }
     this.drawHero(g);
+    this.syncCrispWorldSprites();
   }
 
   private drawStaticWorld() {
     const g = this.worldStaticArt;
     g.clear();
-    this.drawWarningSign(g, 36, 432);
+    if (!this.crispOverlayActive) this.drawWarningSign(g, 36, 432);
     for (const checkpoint of this.checkpoints) {
       g.fillStyle(0x09131a, 0.38); g.fillEllipse(checkpoint, FLOOR - 4, 48, 10);
       g.fillStyle(0xc99a45, 0.9); g.fillRoundedRect(checkpoint - 3, FLOOR - 83, 6, 80, 3);
@@ -2384,6 +2682,7 @@ class HeistScene extends Phaser.Scene {
 
   private drawHud(_paused: boolean) {
     const g = this.hud;
+    g.setVisible(this.state !== 'title' && !this.crispOverlayActive);
     g.clear();
     const hudScale = 1 / this.cameras.main.zoomX;
     const centerX = this.scale.width / 2;
@@ -2416,26 +2715,26 @@ class HeistScene extends Phaser.Scene {
       const slotWidth = panelWidth / 5;
       const slotX = (index: number) => left + slotWidth * index + 8;
       const labelY = top + 6, valueY = top + 21;
-      g.fillStyle(0x061a2d, 0.88); g.fillRoundedRect(left, top, panelWidth, 54, 10);
-      g.lineStyle(1.2, 0xb3d4ed, 0.55); g.strokeRoundedRect(left, top, panelWidth, 54, 10);
-      ensureText('scoreLabel', slotX(0), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.7 }).setText('SCORE');
-      ensureText('scoreText', slotX(0), valueY, { ...valueStyle, fontSize: '19px' }).setText(String(this.score).padStart(5, '0'));
-      ensureText('timerLabel', slotX(1), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.7 }).setText('TIME');
-      const timerText = ensureText('timerText', slotX(1), valueY, { ...valueStyle, fontSize: '19px' });
+      g.fillStyle(0x041321, 0.94); g.fillRoundedRect(left, top, panelWidth, 56, 10);
+      g.lineStyle(1.4, 0xc0def4, 0.72); g.strokeRoundedRect(left, top, panelWidth, 56, 10);
+      ensureText('scoreLabel', slotX(0), labelY, { ...labelStyle, fontSize: '10px', letterSpacing: 0.7 }).setText('SCORE');
+      ensureText('scoreText', slotX(0), valueY, { ...valueStyle, fontSize: '20px', strokeThickness: 2.5 }).setText(String(this.score).padStart(5, '0'));
+      ensureText('timerLabel', slotX(1), labelY, { ...labelStyle, fontSize: '10px', letterSpacing: 0.7 }).setText('TIME');
+      const timerText = ensureText('timerText', slotX(1), valueY, { ...valueStyle, fontSize: '20px', strokeThickness: 2.5 });
       timerText.setText(`${String(Math.floor(this.timeLeft / 60)).padStart(2, '0')}:${String(this.timeLeft % 60).padStart(2, '0')}`);
       timerText.setColor(this.timeLeft <= 15 ? '#ff707c' : '#ffffff');
-      ensureText('coinsLabel', slotX(2), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('BEANS');
+      ensureText('coinsLabel', slotX(2), labelY, { ...labelStyle, fontSize: '10px', letterSpacing: 0.5 }).setText('BEANS');
       const collected = this.coins.filter(coin => coin.taken).length;
-      ensureText('coinsText', slotX(2), valueY, { ...valueStyle, fontSize: '18px' }).setText(`${collected}/${this.coins.length}`);
-      ensureText('livesLabel', slotX(3), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('LIVES');
+      ensureText('coinsText', slotX(2), valueY, { ...valueStyle, fontSize: '19px', strokeThickness: 2.5 }).setText(`${collected}/${this.coins.length}`);
+      ensureText('livesLabel', slotX(3), labelY, { ...labelStyle, fontSize: '10px', letterSpacing: 0.5 }).setText('LIVES');
       for (let i = 0; i < 4; i++) {
-        const x = slotX(3) + 4 + i * 9, y = top + 35;
+        const x = slotX(3) + 4 + i * 9, y = top + 37;
         g.fillStyle(i < this.lives ? 0xff4e6d : 0x485b78, 1);
-        g.fillCircle(x - 2, y - 1, 2.5); g.fillCircle(x + 2, y - 1, 2.5); g.fillTriangle(x - 4.5, y, x + 4.5, y, x, y + 5);
+        g.fillCircle(x - 2.6, y - 1.2, 3); g.fillCircle(x + 2.6, y - 1.2, 3); g.fillTriangle(x - 5.3, y, x + 5.3, y, x, y + 6);
       }
-      ensureText('livesCount', slotX(3) + 45, valueY + 2, { ...labelStyle, fontSize: '10px', color: '#ffffff', letterSpacing: 0 }).setText(`${this.lives}/4`);
-      ensureText('routeLabel', slotX(4), labelY, { ...labelStyle, fontSize: '9px', letterSpacing: 0.5 }).setText('LEVEL');
-      ensureText('routeValue', slotX(4), valueY, { ...valueStyle, fontSize: '17px', color: '#fff1b2' }).setText(`${this.levelIndex + 1}/3`);
+      ensureText('livesCount', slotX(3) + 45, valueY + 2, { ...labelStyle, fontSize: '11px', fontStyle: 'bold', color: '#ffffff', stroke: '#041321', strokeThickness: 2, letterSpacing: 0 }).setText(`${this.lives}/4`);
+      ensureText('routeLabel', slotX(4), labelY, { ...labelStyle, fontSize: '10px', letterSpacing: 0.5 }).setText('LEVEL');
+      ensureText('routeValue', slotX(4), valueY, { ...valueStyle, fontSize: '18px', color: '#fff1b2', strokeThickness: 2.5 }).setText(`${this.levelIndex + 1}/3`);
     } else {
 
     // Score
@@ -2511,10 +2810,10 @@ class HeistScene extends Phaser.Scene {
       const cardTop = cardY;
       this.powerupZones[i]?.setPosition(uiX(controlX), uiY(cardTop + cardHeight / 2)).setSize(cardWidth * hudScale, cardHeight * hudScale);
       const cardLit = activePowerup || hovered;
-      g.fillStyle(0x041a3d, hovered ? 0.84 : 0.72); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
-      g.fillStyle(cardLit ? 0x1477d4 : 0x0a4c9b, 0.98); g.fillRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
+      g.fillStyle(0x03172b, hovered ? 0.98 : 0.94); g.fillRoundedRect(controlX - cardWidth / 2, cardTop + 5, cardWidth, cardHeight, 16);
+      g.fillStyle(cardLit ? 0x1878d0 : 0x0b559f, 1); g.fillRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
       g.fillStyle(0xffffff, cardLit ? 0.16 : 0.1); g.fillRoundedRect(controlX - cardWidth / 2 + 5, cardTop + 4, cardWidth - 10, 7, 4);
-      g.lineStyle(cardLit ? 2.2 : 1.7, cardLit ? power.color : 0xe0bd66, cardLit ? (hovered ? 1 : 0.86 + pulse * 0.14) : 0.8);
+      g.lineStyle(cardLit ? 2.4 : 2, cardLit ? power.color : 0xffdf88, cardLit ? (hovered ? 1 : 0.9 + pulse * 0.1) : 0.98);
       g.strokeRoundedRect(controlX - cardWidth / 2, cardTop, cardWidth, cardHeight, 16);
       if (!compactTouchHud) {
         g.lineStyle(1, 0xffffff, hovered ? 0.3 : 0.18); g.lineBetween(controlX - 34, cardTop + 5, controlX + 34, cardTop + 5);
@@ -2527,7 +2826,7 @@ class HeistScene extends Phaser.Scene {
         .setVisible(true)
         .setAlpha(i === 3 && !this.extraLifeAvailable ? 0.42 : 1);
       if (compactTouchHud) {
-        const badgeRadius = gadgetSize < 38 ? 7 : 8;
+        const badgeRadius = 10;
         const badgeX = controlX + cardWidth / 2 - badgeRadius;
         const badgeY = cardTop + badgeRadius;
         g.fillStyle(0x062d63, 1); g.fillCircle(badgeX, badgeY, badgeRadius);
@@ -2539,7 +2838,7 @@ class HeistScene extends Phaser.Scene {
       if (!this.powerupChargeTexts[i]) this.powerupChargeTexts[i] = this.add.text(0, 0, '', { fontFamily: 'Lilita One, Arial Black, sans-serif', fontSize: '11px', color: '#fffdf5', stroke: '#06121b', strokeThickness: 2 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(10).setScrollFactor(0);
       const charges = i < 3 ? this.powerupCharges[i] : Number(this.extraLifeAvailable);
       this.powerupChargeTexts[i].setPosition(uiX(controlX + cardWidth / 2 - (compactTouchHud ? 8 : 14)), uiY(cardTop + (compactTouchHud ? 8 : 14)))
-        .setScale(hudScale).setFontSize(compactTouchHud ? 11 : 11).setText(String(charges)).setVisible(true);
+        .setScale(hudScale).setFontSize(12).setText(String(charges)).setVisible(true);
       if (!(this as any).powerupLabels) (this as any).powerupLabels = powerups.map(p => this.add.text(p.x, cardY + 48, p.title, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '11px', fontStyle: 'bold', color: '#f4f7f2', letterSpacing: 0.8, stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
       ((this as any).powerupLabels as Phaser.GameObjects.Text[])[i].setPosition(uiX(controlX), uiY(cardTop + 48)).setScale(hudScale).setText(power.title).setVisible(!compactTouchHud);
       if (!(this as any).powerupStatus) (this as any).powerupStatus = powerups.map(p => this.add.text(p.x, cardY + 68, p.status, { fontFamily: 'Nunito Sans, Arial, sans-serif', fontSize: '10px', fontStyle: 'bold', color: '#fffdf5', stroke: '#061525', strokeThickness: 1 }).setResolution(this.gameplayTextResolution()).setOrigin(0.5).setDepth(9).setScrollFactor(0));
@@ -2701,17 +3000,36 @@ class HeistScene extends Phaser.Scene {
       if (!endState) this.gameResultActions?.classList.remove('is-visible');
       if ((this as any).settingRows) ((this as any).settingRows as { label: Phaser.GameObjects.Text; value: Phaser.GameObjects.Text }[]).forEach(row => { row.label.setVisible(false); row.value.setVisible(false); });
     }
+    this.syncCrispHud();
   }
 }
 
 const gameHost = window as Window & { __fagioloHeistGame?: Phaser.Game };
+const syncVisibleGameArea = () => {
+  const mount = document.getElementById('game');
+  if (!mount) return;
+  const viewport = window.visualViewport;
+  const visualViewportIsUsable = viewport && Math.abs(viewport.scale - 1) < 0.01;
+  const width = visualViewportIsUsable ? viewport.width : window.innerWidth;
+  const height = visualViewportIsUsable ? viewport.height : window.innerHeight;
+  const left = visualViewportIsUsable ? viewport.offsetLeft : 0;
+  const top = visualViewportIsUsable ? viewport.offsetTop : 0;
+  mount.style.setProperty('--game-visible-width', `${width}px`);
+  mount.style.setProperty('--game-visible-height', `${height}px`);
+  mount.style.setProperty('--game-visible-left', `${left}px`);
+  mount.style.setProperty('--game-visible-top', `${top}px`);
+};
+syncVisibleGameArea();
+window.addEventListener('resize', syncVisibleGameArea, { passive: true });
+window.visualViewport?.addEventListener('resize', syncVisibleGameArea, { passive: true });
 gameHost.__fagioloHeistGame?.destroy(true);
-document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate, #game > .online-overlay').forEach(element => element.remove());
+document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate, #game > .online-overlay, #game > .game-crisp-overlay').forEach(element => element.remove());
 gameHost.__fagioloHeistGame = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   width: window.innerWidth,
   height: window.innerHeight,
+  fullscreenTarget: 'game',
   backgroundColor: '#102744',
   transparent: true,
   scale: { mode: Phaser.Scale.RESIZE },
