@@ -1656,7 +1656,8 @@ class HeistScene extends Phaser.Scene {
     const camera = this.cameras.main;
     const worldX = sprite.x - camera.scrollX * sprite.scrollFactorX;
     const worldY = sprite.y - camera.scrollY * sprite.scrollFactorY;
-    const screen = camera.matrix.transformPoint(worldX, worldY);
+    const cameraMatrix = (camera as typeof camera & { matrix: { transformPoint(x: number, y: number): { x: number; y: number } } }).matrix;
+    const screen = cameraMatrix.transformPoint(worldX, worldY);
     const width = sprite.displayWidth * camera.zoomX;
     const height = sprite.displayHeight * camera.zoomY;
     node.style.display = 'block';
@@ -1740,10 +1741,11 @@ class HeistScene extends Phaser.Scene {
     const camera = this.cameras.main;
     const mobileSignScale = this.isShortLandscapeTouch() ? 0.68 : 1;
     if (this.crispWorldLayer) this.crispWorldLayer.style.clipPath = 'none';
-    const boardCenter = camera.matrix.transformPoint(135 - camera.scrollX, 509 - camera.scrollY);
+    const cameraMatrix = (camera as typeof camera & { matrix: { transformPoint(x: number, y: number): { x: number; y: number } } }).matrix;
+    const boardCenter = cameraMatrix.transformPoint(135 - camera.scrollX, 509 - camera.scrollY);
     const boardWidth = 198 * camera.zoomX * mobileSignScale;
     const boardHeight = 154 * camera.zoomY * mobileSignScale;
-    const textCenter = camera.matrix.transformPoint(this.signText.x - camera.scrollX, this.signText.y - camera.scrollY);
+    const textCenter = cameraMatrix.transformPoint(this.signText.x - camera.scrollX, this.signText.y - camera.scrollY);
     const mobileBoardDrop = this.isShortLandscapeTouch()
       ? Math.max(64, 88 - (boardCenter.y - boardHeight / 2))
       : 0;
