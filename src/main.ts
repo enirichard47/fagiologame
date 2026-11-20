@@ -1,11 +1,16 @@
 import Phaser from 'phaser';
 import './style.css';
-import { FagioloOnline, type LeaderboardEntry } from './online';
+import { FagioloOnline, type AdminLeaderboardEntry, type AdminModerationRecord, type AdminPrizeClaim, type LeaderboardEntry, type PlayerPrizeClaim } from './online';
 
 const W = 1664;
 const H = 934;
 const FLOOR = 768;
 const RUN_TIME_SECONDS = 60;
+const formatRunTime = (milliseconds: number) => {
+  if (milliseconds >= RUN_TIME_SECONDS * 1000) return '—';
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+};
 const LEVEL_NAMES = ['OUTER GARDENS', 'INNER RAMPARTS', 'ROYAL KEEP'] as const;
 const LEVEL_BACKGROUNDS = [
   '/assets/level-background-generated.webp',
@@ -84,6 +89,11 @@ class HeistScene extends Phaser.Scene {
   private onlineOverlay?: HTMLDivElement;
   private onlineMode: 'signup' | 'login' = 'signup';
   private leaderboardLevel = 1;
+  private adminLevel = 1;
+  private onlineIsAdmin = false;
+  private closedLevels = new Set<number>();
+  private levelAvailabilityLoaded = false;
+  private gameShortcutSuppressedUntil = 0;
   private leaderboardRunStatus = '';
   private platformSprites: Phaser.GameObjects.Image[] = [];
   private activePlatforms: (typeof platforms[number])[] = [];
@@ -206,6 +216,7 @@ class HeistScene extends Phaser.Scene {
   private lives = 3;
   private timeLeft = RUN_TIME_SECONDS;
   private elapsed = 0;
+  private runElapsedMs = 0;
   private hurtTimer = 0;
   private faceRight = true;
   private animTime = 0;
@@ -239,6 +250,7 @@ class HeistScene extends Phaser.Scene {
   private crispMobileLayer?: HTMLDivElement;
   private crispWorldLayer?: HTMLDivElement;
   private crispWorldNodes = new Map<string, HTMLImageElement>();
+  private crispPreloadedImages: HTMLImageElement[] = [];
   private crispHudNodes = new Map<string, HTMLElement>();
   private crispSignBoard?: HTMLDivElement;
   private crispSignInstructions?: HTMLDivElement;
@@ -421,20 +433,27 @@ class HeistScene extends Phaser.Scene {
     this.screenShakeEnabled = localStorage.getItem('fagiolo-screen-shake') !== 'false';
     this.touchControlsVisible = this.sys.game.device.input.touch || navigator.maxTouchPoints > 0;
     this.cursors = this.input.keyboard?.createCursorKeys();
+    this.input.keyboard?.removeCapture([
+      Phaser.Input.Keyboard.KeyCodes.LEFT,
+      Phaser.Input.Keyboard.KeyCodes.RIGHT,
+      Phaser.Input.Keyboard.KeyCodes.UP,
+      Phaser.Input.Keyboard.KeyCodes.DOWN,
+    ]);
+    const addGameKey = (keyCode: number) => this.input.keyboard!.addKey(keyCode, false);
     this.keys = {
-      left: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
-      right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT),
-      jump: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.UP),
-      a: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      d: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
-      w: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      space: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
+      left: addGameKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
+      right: addGameKey(Phaser.Input.Keyboard.KeyCodes.RIGHT),
+      jump: addGameKey(Phaser.Input.Keyboard.KeyCodes.UP),
+      a: addGameKey(Phaser.Input.Keyboard.KeyCodes.A),
+      d: addGameKey(Phaser.Input.Keyboard.KeyCodes.D),
+      w: addGameKey(Phaser.Input.Keyboard.KeyCodes.W),
+      space: addGameKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
     };
     this.keys = Object.assign(this.keys, {
-      power1: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ONE),
-      power2: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TWO),
-      power3: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
-      power4: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
+      power1: addGameKey(Phaser.Input.Keyboard.KeyCodes.ONE),
+      power2: addGameKey(Phaser.Input.Keyboard.KeyCodes.TWO),
+      power3: addGameKey(Phaser.Input.Keyboard.KeyCodes.THREE),
+      power4: addGameKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
     });
     this.titleImage = this.add.image(W / 2, H / 2, 'level-background').setDisplaySize(W, H).setScrollFactor(0).setDepth(-3).setVisible(false);
     this.titleLayer = this.add.container(0, 0).setScrollFactor(0).setDepth(6);
@@ -493,8 +512,8 @@ class HeistScene extends Phaser.Scene {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'level-card';
-      card.innerHTML = `<span class="level-number">0${index + 1}</span><span class="level-name">${name}</span><span class="level-status">${index === 0 ? 'READY TO PLAY' : 'LOCKED'}</span>`;
-      card.disabled = index > this.unlockedLevel;
+      card.innerHTML = `<span class="level-number">0${index + 1}</span><span class="level-name">${name}</span><span class="level-status">READY TO PLAY</span>`;
+      card.disabled = false;
       card.addEventListener('click', () => this.startGame(index));
       cards.append(card);
     });
@@ -568,11 +587,24 @@ class HeistScene extends Phaser.Scene {
       else if (this.state === 'lost' || this.state === 'timeout') this.startGame(this.levelIndex);
     });
     this.input.on('pointerup', () => { this.touchLeft = false; this.touchRight = false; this.touchJumpHeld = false; });
-    this.input.keyboard?.on('keydown-ENTER', () => this.state === 'title' ? this.showLevelSelect() : this.startGame(this.levelIndex));
-    this.input.keyboard?.on('keydown-R', () => this.startGame(this.levelIndex));
-    this.input.keyboard?.on('keydown-ESC', () => this.settingsOpen ? this.closeSettings(true) : this.togglePause());
-    this.input.keyboard?.on('keydown-F', () => this.toggleFullscreen());
-    this.input.keyboard?.on('keydown-M', () => {
+    this.input.keyboard?.on('keydown-ENTER', (event: KeyboardEvent) => {
+      if (this.isGameShortcutBlocked(event)) return;
+      this.state === 'title' ? this.showLevelSelect() : this.startGame(this.levelIndex);
+    });
+    this.input.keyboard?.on('keydown-R', (event: KeyboardEvent) => {
+      if (this.isGameShortcutBlocked(event)) return;
+      this.startGame(this.levelIndex);
+    });
+    this.input.keyboard?.on('keydown-ESC', (event: KeyboardEvent) => {
+      if (this.isGameShortcutBlocked(event)) return;
+      this.settingsOpen ? this.closeSettings(true) : this.togglePause();
+    });
+    this.input.keyboard?.on('keydown-F', (event: KeyboardEvent) => {
+      if (this.isGameShortcutBlocked(event)) return;
+      this.toggleFullscreen();
+    });
+    this.input.keyboard?.on('keydown-M', (event: KeyboardEvent) => {
+      if (this.isGameShortcutBlocked(event)) return;
       this.soundEnabled = !this.soundEnabled;
       localStorage.setItem('fagiolo-sound-enabled', String(this.soundEnabled));
       this.updateSfxMix();
@@ -590,11 +622,12 @@ class HeistScene extends Phaser.Scene {
 
     const controls = document.createElement('div');
     controls.className = 'game-top-controls';
-    controls.innerHTML = `<button class="game-top-button" data-action="pause" aria-label="Pause game"><span class="top-button-icon pause-icon" aria-hidden="true"><i></i><i></i></span><small>PAUSE</small></button><button class="game-top-button" data-action="settings" aria-label="Open settings"><span class="top-button-icon settings-icon" aria-hidden="true">⚙</span><small>SETTINGS</small></button><button class="game-top-button exit-button" data-action="exit" aria-label="Exit to level select"><span class="top-button-icon exit-icon" aria-hidden="true">↪</span><small>EXIT</small></button>`;
+    controls.innerHTML = `<button class="game-top-button" data-action="pause" aria-label="Pause game"><span class="top-button-icon pause-icon" aria-hidden="true"><i></i><i></i></span><small>PAUSE</small></button><button class="game-top-button" data-action="settings" aria-label="Open settings"><span class="top-button-icon settings-icon" aria-hidden="true">⚙</span><small>SETTINGS</small></button><button class="game-top-button fullscreen-button" data-action="fullscreen" aria-label="Enter fullscreen"><span class="top-button-icon fullscreen-icon" aria-hidden="true">⛶</span><small>FULL</small></button><button class="game-top-button exit-button" data-action="exit" aria-label="Exit to level select"><span class="top-button-icon exit-icon" aria-hidden="true">↪</span><small>EXIT</small></button>`;
     mount.append(controls);
     this.gameTopControls = controls;
     controls.querySelector('[data-action="pause"]')?.addEventListener('click', () => this.togglePause());
     controls.querySelector('[data-action="settings"]')?.addEventListener('click', () => this.toggleSettings());
+    controls.querySelector('[data-action="fullscreen"]')?.addEventListener('click', () => this.toggleFullscreen());
     controls.querySelector('[data-action="exit"]')?.addEventListener('click', () => this.quitToLevelSelect());
 
     const resultActions = document.createElement('div');
@@ -699,7 +732,10 @@ class HeistScene extends Phaser.Scene {
       this.queueViewportRefresh();
     }, { passive: true });
     window.visualViewport?.addEventListener('resize', () => this.queueViewportRefresh(), { passive: true });
-    document.addEventListener('fullscreenchange', () => this.queueViewportRefresh());
+    document.addEventListener('fullscreenchange', () => {
+      this.queueViewportRefresh();
+      this.syncSettingsMenu();
+    });
     this.syncVisibleGameArea();
 
     if (this.touchControlsVisible) {
@@ -754,18 +790,90 @@ class HeistScene extends Phaser.Scene {
     document.querySelectorAll<HTMLButtonElement>('[data-open-leaderboard]').forEach(button => {
       button.addEventListener('click', () => this.openOnlinePanel('leaderboard'));
     });
-    this.online.restoreSession().then(() => this.syncOnlineEntryPoints()).catch(() => this.syncOnlineEntryPoints());
+    this.online.restoreSession().then(() => {
+      this.syncOnlineEntryPoints();
+      if (this.isAdminRoute()) void this.enterAdminRoute();
+    }).catch(() => {
+      this.syncOnlineEntryPoints();
+      if (this.isAdminRoute()) void this.enterAdminRoute();
+    });
     window.addEventListener('fagiolo-auth-change', () => this.syncOnlineEntryPoints());
+    window.addEventListener('popstate', () => {
+      if (this.isAdminRoute()) void this.enterAdminRoute();
+      else if (this.onlineOverlay?.dataset.adminRoute === 'true') {
+        this.onlineOverlay.removeAttribute('data-admin-route');
+        const headerKicker = this.onlineOverlay.querySelector<HTMLElement>('.online-panel-header .online-kicker');
+        if (headerKicker) headerKicker.textContent = 'FAGIOLO HEIST ONLINE';
+        this.onlineOverlay.classList.remove('is-visible');
+        this.onlineOverlay.setAttribute('aria-hidden', 'true');
+      }
+    });
   }
 
   private createOnlineOverlay(mount: HTMLElement) {
     const overlay = document.createElement('div');
     overlay.className = 'online-overlay';
     overlay.setAttribute('aria-hidden', 'true');
-    overlay.innerHTML = `<section class="online-panel" role="dialog" aria-modal="true" aria-labelledby="online-title"><header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header><div class="online-auth-view" data-online-auth-view><p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p><form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Player name<input name="username" type="text" minlength="3" maxlength="18" pattern="[A-Za-z0-9_]{3,18}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Email<input name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your player name appears publicly on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form><div class="online-member-view" data-online-member hidden><p class="online-member-name" data-online-member-name></p><p class="online-intro">Your best completed score for each level is saved to your account.</p><button class="online-submit online-signout" type="button" data-auth-signout>SIGN OUT</button></div><p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button></div><div class="online-board-view" data-online-board-view hidden><p class="online-intro">Best completed run per player · score, beans, then fastest time.</p><div class="online-level-tabs" role="tablist" aria-label="Leaderboard level"><button type="button" data-board-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-board-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-board-level="3" aria-selected="false">LEVEL 3</button></div><div class="online-board-head"><span>RANK / PLAYER</span><span>SCORE</span><span>BEANS</span><span>TIME</span></div><ol class="online-board-list" data-board-list></ol><p class="online-notice" data-board-notice role="status" aria-live="polite"></p><button class="online-submit online-board-signin" type="button" data-board-signin>CREATE ACCOUNT / SIGN IN</button></div></section>`;
+    overlay.innerHTML = `<section class="online-panel leaderboard-panel" role="dialog" aria-modal="true" aria-labelledby="online-title">
+      <header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header>
+      <div class="online-auth-view" data-online-auth-view>
+        <p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p>
+        <form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Account username<input name="login_username" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your login name and Telegram contact stay private. Only your in-game name appears on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form>
+        <div class="online-member-view" data-online-member hidden><section class="player-profile-card"><span class="player-profile-avatar"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div class="player-profile-copy"><span class="online-kicker">PLAYER PROFILE</span><p class="online-member-name" data-online-member-name></p><p class="player-profile-login">ACCOUNT USERNAME <strong data-player-login></strong></p><p class="online-intro">Your best completed runs are saved here and ranked by level.</p></div><span class="player-profile-status">SIGNED IN</span></section></div>
+        <p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button>
+      </div>
+      <div class="online-board-view" data-online-board-view hidden>
+        <div class="online-board-title"><div><span class="online-kicker">THE HEIST RANKINGS</span><p class="online-intro">Best run per player, ranked by score, beans, then time.</p></div><button class="online-secondary board-profile-button" type="button" data-board-profile hidden>MY PROFILE</button></div>
+        <div class="online-level-tabs" role="tablist" aria-label="Leaderboard level"><button type="button" data-board-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-board-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-board-level="3" aria-selected="false">LEVEL 3</button></div>
+        <div class="online-podium" data-board-podium aria-label="Top three players" hidden></div>
+        <div class="online-board-head" data-board-head><span>RANK / PLAYER</span><span>SCORE</span><span>BEANS</span><span>TIME</span></div><ol class="online-board-list" data-board-list></ol>
+        <p class="online-notice" data-board-notice role="status" aria-live="polite"></p><button class="online-submit online-board-signin" type="button" data-board-signin>CREATE ACCOUNT / SIGN IN</button>
+      </div>
+    </section>`;
+    const authForm = overlay.querySelector<HTMLFormElement>('[data-auth-form]');
+    authForm?.querySelector('[data-auth-username-wrap]')?.insertAdjacentHTML('afterend', '<label class="online-field" data-auth-display-wrap>In-game name (public)<input name="username" type="text" minlength="3" maxlength="18" pattern="[A-Za-z0-9_]{3,18}" autocomplete="nickname" placeholder="Leave blank to use account username"></label><label class="online-field" data-auth-telegram-wrap>Telegram username (optional, private)<input name="telegram_username" type="text" maxlength="33" pattern="@?[A-Za-z0-9_]{5,32}" autocomplete="off" placeholder="Add before claiming a prize"></label>');
+    const gameNameLabel = authForm?.querySelector('[data-auth-username-wrap]');
+    if (gameNameLabel?.firstChild) gameNameLabel.firstChild.textContent = 'Account username';
+    const privacyNote = authForm?.querySelector<HTMLElement>('.online-privacy-note');
+    if (privacyNote) privacyNote.textContent = 'Your login username and Telegram contact stay private. Only your in-game name appears on the leaderboard. Save your password; there is no self-service password reset.';
+    const passwordInput = authForm?.querySelector<HTMLInputElement>('[name="password"]');
+    if (passwordInput) {
+      const passwordWrap = document.createElement('div');
+      passwordWrap.className = 'online-password-wrap';
+      passwordInput.before(passwordWrap);
+      passwordWrap.append(passwordInput);
+      const visibilityButton = document.createElement('button');
+      visibilityButton.type = 'button';
+      visibilityButton.className = 'password-visibility';
+      visibilityButton.setAttribute('aria-label', 'Show password');
+      visibilityButton.setAttribute('aria-pressed', 'false');
+      visibilityButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.2 12s3.4-6.2 9.8-6.2 9.8 6.2 9.8 6.2-3.4 6.2-9.8 6.2S2.2 12 2.2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+      visibilityButton.addEventListener('click', () => {
+        const showPassword = passwordInput.type === 'password';
+        passwordInput.type = showPassword ? 'text' : 'password';
+        visibilityButton.setAttribute('aria-pressed', String(showPassword));
+        visibilityButton.setAttribute('aria-label', showPassword ? 'Hide password' : 'Show password');
+        passwordInput.focus({ preventScroll: true });
+      });
+      passwordWrap.append(visibilityButton);
+    }
+    const profileCard = overlay.querySelector('[data-online-member] .player-profile-card');
+    profileCard?.insertAdjacentHTML('afterend', `<section class="player-profile-contact"><span class="online-kicker">PRIVATE PRIZE CONTACT</span><form class="online-profile-form" data-profile-form><label class="online-field">Telegram username<input name="account_telegram" type="text" minlength="5" maxlength="33" pattern="@?[A-Za-z0-9_]{5,32}" autocomplete="off" placeholder="@yourusername" required></label><p class="online-privacy-note">Only you and the prize admin can see this. Add it before requesting a prize claim. Your in-game name is public.</p><button class="online-secondary" type="submit">SAVE TELEGRAM NAME</button></form><p class="online-notice" data-profile-notice role="status" aria-live="polite"></p></section><section class="player-wins"><h3>Confirmed wins</h3><div data-player-wins><p class="online-privacy-note">Wins are recorded when a leaderboard is finalized.</p></div></section><section class="player-claims"><h3>Prize claims</h3><p class="online-privacy-note">A claim becomes available after results are finalized when you were selected for a reward.</p><div data-player-claims></div></section><button class="online-secondary admin-entry" type="button" data-open-admin hidden>OPEN PRIZE DESK</button><button class="online-secondary online-signout" type="button" data-auth-signout>SIGN OUT</button>`);
+    const adminView = document.createElement('div');
+    adminView.className = 'online-admin-view';
+    adminView.dataset.onlineAdminView = '';
+    adminView.hidden = true;
+    adminView.innerHTML = `<div class="admin-page-heading"><div><span class="online-kicker">PRIVATE TO ADMINS</span><h2>Admin dashboard</h2></div><button class="online-secondary" type="button" data-admin-back>GAME ACCOUNT</button></div><p class="online-intro">Manage level access, review leaderboard runs, and handle prize claims. Telegram usernames appear only in this admin view.</p><section class="admin-overview"><article><small>PLAYERS</small><strong data-admin-players>—</strong></article><article><small>SAVED SCORES</small><strong data-admin-scores>—</strong></article><article><small>OPEN CLAIMS</small><strong data-admin-pending>—</strong></article></section><section class="admin-level-management"><h3>Level access</h3><p>Closed levels are hidden from play selection and cannot be started from the menu. Closing also freezes score submissions.</p><div data-admin-level-controls class="admin-level-controls"></div></section><section class="admin-score-review"><h3>Score review <span>LEVEL</span></h3><p class="admin-winner-rule">Mark one player to make them the winner and prize recipient when this board is cleared. If you mark nobody, the top-ranked player is recorded as winner without a prize. Close the level first to freeze scores; reopen it for the next competition.</p><div class="online-level-tabs" role="tablist" aria-label="Admin level"><button type="button" data-admin-level="1" aria-selected="true">LEVEL 1</button><button type="button" data-admin-level="2" aria-selected="false">LEVEL 2</button><button type="button" data-admin-level="3" aria-selected="false">LEVEL 3</button></div><div class="admin-reset-actions"><button type="button" data-clear-board="selected">CLEAR LEVEL 1 BOARD</button><button type="button" data-clear-board="all">CLEAR ALL LEADERBOARDS</button></div><ol class="admin-leaderboard-list" data-admin-leaderboard></ol><p class="online-notice" data-admin-board-notice role="status" aria-live="polite"></p></section><section class="admin-redeem"><h3>Verify a claim code</h3><form data-admin-redeem-form><input name="claim_code" type="text" maxlength="40" autocomplete="off" placeholder="Paste the winner's code" required><button class="online-submit" type="submit">VERIFY &amp; REDEEM</button></form><p class="online-notice" data-admin-redeem-notice role="status" aria-live="polite"></p></section><section class="admin-claims"><h3>Prize claim activity</h3><ol data-admin-claims-list class="admin-claims-list"></ol></section><section class="admin-claims admin-audit"><h3>Score moderation history</h3><ol data-admin-audit-list class="admin-claims-list"></ol></section><section class="admin-claims admin-audit"><h3>Leaderboard reset history</h3><ol data-admin-reset-list class="admin-claims-list"></ol></section>`;
+    overlay.querySelector('.online-panel')?.append(adminView);
+
     mount.append(overlay);
     this.onlineOverlay = overlay;
     const close = () => {
+      this.gameShortcutSuppressedUntil = performance.now() + 100;
+      if (this.isAdminRoute()) history.replaceState(null, '', '/');
+      overlay.removeAttribute('data-admin-route');
+      const headerKicker = overlay.querySelector<HTMLElement>('.online-panel-header .online-kicker');
+      if (headerKicker) headerKicker.textContent = 'FAGIOLO HEIST ONLINE';
       overlay.classList.remove('is-visible');
       overlay.setAttribute('aria-hidden', 'true');
     };
@@ -776,12 +884,43 @@ class HeistScene extends Phaser.Scene {
       this.renderOnlineAuth();
     });
     overlay.querySelector('[data-auth-form]')?.addEventListener('submit', event => { void this.submitOnlineAuth(event); });
+    overlay.querySelector('[data-profile-form]')?.addEventListener('submit', event => { void this.saveOnlineProfile(event); });
+    overlay.querySelector('[data-open-admin]')?.addEventListener('click', () => {
+      history.pushState(null, '', '/admin');
+      void this.enterAdminRoute();
+    });
+    overlay.querySelector('[data-admin-back]')?.addEventListener('click', () => {
+      if (this.isAdminRoute()) history.replaceState(null, '', '/');
+      overlay.removeAttribute('data-admin-route');
+      const headerKicker = overlay.querySelector<HTMLElement>('.online-panel-header .online-kicker');
+      if (headerKicker) headerKicker.textContent = 'FAGIOLO HEIST ONLINE';
+      this.openOnlinePanel('auth');
+    });
+    overlay.querySelector('[data-admin-redeem-form]')?.addEventListener('submit', event => { void this.redeemOnlinePrize(event); });
+    overlay.querySelectorAll<HTMLButtonElement>('[data-admin-level]').forEach(button => {
+      button.addEventListener('click', () => {
+        this.adminLevel = Number(button.dataset.adminLevel);
+        overlay.querySelectorAll<HTMLButtonElement>('[data-admin-level]').forEach(tab => tab.setAttribute('aria-selected', String(tab === button)));
+        const clearLevel = overlay.querySelector<HTMLButtonElement>('[data-clear-board="selected"]');
+        if (clearLevel) clearLevel.textContent = `CLEAR LEVEL ${this.adminLevel} BOARD`;
+        void this.loadAdminLeaderboard();
+      });
+    });
+    overlay.querySelector('[data-admin-level-controls]')?.addEventListener('click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-toggle-level]');
+      if (!button) return;
+      void this.toggleAdminLevel(Number(button.dataset.toggleLevel), button.dataset.open !== 'true');
+    });
+    overlay.querySelectorAll<HTMLButtonElement>('[data-clear-board]').forEach(button => {
+      button.addEventListener('click', () => void this.clearAdminLeaderboard(button.dataset.clearBoard === 'all' ? null : this.adminLevel));
+    });
     overlay.querySelector('[data-auth-signout]')?.addEventListener('click', async () => {
       await this.online.signOut();
       this.renderOnlineAuth();
       this.setOnlineNotice('[data-auth-notice]', 'You are signed out.');
     });
     overlay.querySelector('[data-board-signin]')?.addEventListener('click', () => this.openOnlinePanel('auth'));
+    overlay.querySelector('[data-board-profile]')?.addEventListener('click', () => this.openOnlinePanel('auth'));
     overlay.querySelectorAll<HTMLButtonElement>('[data-board-level]').forEach(button => {
       button.addEventListener('click', () => {
         this.leaderboardLevel = Number(button.dataset.boardLevel);
@@ -795,42 +934,114 @@ class HeistScene extends Phaser.Scene {
     this.renderOnlineAuth();
   }
 
-  private openOnlinePanel(view: 'auth' | 'leaderboard') {
+  private openOnlinePanel(view: 'auth' | 'leaderboard' | 'admin') {
     const overlay = this.onlineOverlay;
     if (!overlay) return;
     const auth = overlay.querySelector<HTMLElement>('[data-online-auth-view]');
     const board = overlay.querySelector<HTMLElement>('[data-online-board-view]');
+    const admin = overlay.querySelector<HTMLElement>('[data-online-admin-view]');
+    if (view === 'admin' && (!this.online.user || !this.onlineIsAdmin)) view = 'auth';
     if (auth) auth.hidden = view !== 'auth';
     if (board) board.hidden = view !== 'leaderboard';
+    if (admin) admin.hidden = view !== 'admin';
+    const pageTitle = overlay.querySelector<HTMLElement>('#online-title');
+    if (pageTitle) pageTitle.textContent = view === 'admin' ? 'Admin dashboard' : view === 'leaderboard' ? 'Leaderboard' : this.isAdminRoute() && !this.onlineIsAdmin ? 'Admin sign in' : this.online.user ? 'Player profile' : this.onlineMode === 'signup' ? 'Create your account' : 'Welcome back';
+    const profileButton = overlay.querySelector<HTMLButtonElement>('[data-board-profile]');
+    if (profileButton) profileButton.hidden = !this.online.user;
     overlay.dataset.view = view;
     overlay.classList.add('is-visible');
     overlay.setAttribute('aria-hidden', 'false');
-    if (view === 'auth') this.renderOnlineAuth();
-    else void this.loadOnlineLeaderboard();
+    if (view === 'auth') {
+      this.renderOnlineAuth();
+      if (this.online.user) {
+        void this.loadOnlineProfile();
+        void this.loadMyPrizeClaims();
+      }
+    } else if (view === 'leaderboard') void this.loadOnlineLeaderboard();
+    else void this.loadAdminPage();
+  }
+
+  private isAdminRoute() {
+    return window.location.pathname.replace(/\/+$/, '') === '/admin';
+  }
+
+  private async enterAdminRoute() {
+    const overlay = this.onlineOverlay;
+    if (!overlay) return;
+    overlay.dataset.adminRoute = 'true';
+    this.onlineMode = 'login';
+    const headerKicker = overlay.querySelector<HTMLElement>('.online-panel-header .online-kicker');
+    if (headerKicker) headerKicker.textContent = 'PRIVATE ADMIN CONSOLE';
+    await this.online.restoreSession().catch(() => undefined);
+    await this.syncOnlineAdminAccess();
+    if (this.onlineIsAdmin) {
+      this.openOnlinePanel('admin');
+      return;
+    }
+    this.openOnlinePanel('auth');
+    this.renderOnlineAuth();
+    const intro = overlay.querySelector<HTMLElement>('[data-auth-intro]');
+    if (intro) intro.textContent = 'Enter the password for the single authorized administrator account.';
+    this.setOnlineNotice('[data-auth-notice]', this.online.user ? 'This account does not have administrator access.' : '');
+  }
+
+  private isGameShortcutBlocked(event?: KeyboardEvent) {
+    if (performance.now() < this.gameShortcutSuppressedUntil || this.onlineOverlay?.classList.contains('is-visible')) return true;
+    const target = event?.target instanceof Element ? event.target : document.activeElement;
+    return target instanceof Element
+      && !!target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="textbox"]');
+  }
+
+  private isGameplayKeyboardBlocked() {
+    if (this.onlineOverlay?.classList.contains('is-visible')) return true;
+    const target = document.activeElement;
+    return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
   }
 
   private renderOnlineAuth() {
     const overlay = this.onlineOverlay;
     if (!overlay) return;
-    const signedIn = Boolean(this.online.user);
-    const signup = this.onlineMode === 'signup';
+    const adminRoute = this.isAdminRoute();
+    const signedIn = Boolean(this.online.user) && (!adminRoute || this.onlineIsAdmin);
+    const signup = !adminRoute && this.onlineMode === 'signup';
     const title = overlay.querySelector<HTMLElement>('#online-title');
     const intro = overlay.querySelector<HTMLElement>('[data-auth-intro]');
     const username = overlay.querySelector<HTMLElement>('[data-auth-username-wrap]');
+    const displayName = overlay.querySelector<HTMLElement>('[data-auth-display-wrap]');
+    const telegramField = overlay.querySelector<HTMLElement>('[data-auth-telegram-wrap]');
     const form = overlay.querySelector<HTMLElement>('[data-auth-form]');
+    const privacyNote = overlay.querySelector<HTMLElement>('[data-auth-form] .online-privacy-note');
     const member = overlay.querySelector<HTMLElement>('[data-online-member]');
     const switcher = overlay.querySelector<HTMLButtonElement>('[data-auth-mode-toggle]');
     const memberName = overlay.querySelector<HTMLElement>('[data-online-member-name]');
-    if (title) title.textContent = signedIn ? 'Your heist account' : signup ? 'Create your account' : 'Welcome back';
-    if (intro) intro.textContent = signedIn ? 'Your best completed score for each level is saved to your account.' : 'Save your best runs and compete on each level’s leaderboard.';
-    if (username) username.hidden = signedIn || !signup;
-    const usernameInput = overlay.querySelector<HTMLInputElement>('[name="username"]');
-    if (usernameInput) usernameInput.required = !signedIn && signup;
+    const playerLogin = overlay.querySelector<HTMLElement>('[data-player-login]');
+    if (title) title.textContent = adminRoute && !this.onlineIsAdmin ? 'Admin sign in' : signedIn ? 'Player profile' : signup ? 'Create your account' : 'Welcome back';
+    if (intro) intro.textContent = adminRoute ? 'Enter the password for the single authorized administrator account.' : signedIn ? 'Your best completed score for each level is saved to your account.' : 'Save your best runs and compete on each level’s leaderboard.';
+    if (privacyNote) privacyNote.textContent = adminRoute ? 'This sign-in accepts the password for the one administrator account authorized in the database.' : 'Your login username and Telegram contact stay private. Only your in-game name appears on the leaderboard. Save your password; there is no self-service password reset.';
+    if (username) username.hidden = signedIn || adminRoute;
+    if (displayName) displayName.hidden = signedIn || !signup;
+    if (telegramField) telegramField.hidden = signedIn || !signup;
+    const loginInput = overlay.querySelector<HTMLInputElement>('[name="login_username"]');
+    if (loginInput) { loginInput.required = !signedIn && !adminRoute; loginInput.disabled = signedIn || adminRoute; loginInput.minLength = 3; loginInput.maxLength = 32; }
+    const displayInput = overlay.querySelector<HTMLInputElement>('[name="username"]');
+    if (displayInput) { displayInput.required = false; displayInput.disabled = signedIn || !signup; }
+    const telegramInput = overlay.querySelector<HTMLInputElement>('[name="telegram_username"]');
+    if (telegramInput) {
+      telegramInput.required = false;
+      telegramInput.disabled = signedIn || !signup;
+      telegramInput.minLength = 0;
+      telegramInput.pattern = '@?[A-Za-z0-9_]{5,32}';
+    }
     if (form) form.hidden = signedIn;
     if (member) member.hidden = !signedIn;
     if (memberName) memberName.textContent = signedIn ? `SIGNED IN AS  ${this.online.username}` : '';
+    if (playerLogin) playerLogin.textContent = signedIn ? this.online.loginUsername : '';
+    const adminEntry = overlay.querySelector<HTMLButtonElement>('[data-open-admin]');
+    if (adminEntry) adminEntry.hidden = !signedIn || !this.onlineIsAdmin;
+    const profileInput = overlay.querySelector<HTMLInputElement>('[name="account_telegram"]');
+    if (profileInput && signedIn && !profileInput.value) profileInput.value = this.online.telegramUsername;
     if (switcher) {
-      switcher.hidden = signedIn;
+      switcher.hidden = signedIn || adminRoute;
       switcher.textContent = signup ? 'Already have an account? Sign in' : 'New to Fagiolo Heist? Create an account';
     }
     const password = overlay.querySelector<HTMLInputElement>('[name="password"]');
@@ -852,26 +1063,43 @@ class HeistScene extends Phaser.Scene {
     const submit = overlay?.querySelector<HTMLButtonElement>('[data-auth-submit]');
     if (!form || !submit) return;
     const values = new FormData(form);
-    const username = String(values.get('username') ?? '').trim();
-    const email = String(values.get('email') ?? '').trim();
+    const loginUsername = String(values.get('login_username') ?? '').trim();
+    const displayNameValue = String(values.get('username') ?? '').trim();
+    const username = displayNameValue || loginUsername;
+    const telegramUsername = String(values.get('telegram_username') ?? '').trim().replace(/^@/, '');
     const password = String(values.get('password') ?? '');
     submit.disabled = true;
     this.setOnlineNotice('[data-auth-notice]', this.onlineMode === 'signup' ? 'Creating your account…' : 'Signing in…');
     try {
       if (this.onlineMode === 'signup') {
-        if (!/^[A-Za-z0-9_]{3,18}$/.test(username)) throw new Error('Player name must be 3–18 letters, numbers, or underscores.');
-        const result = await this.online.signUp(username, email, password);
-        if (result.needsEmailConfirmation) {
-          this.setOnlineNotice('[data-auth-notice]', 'Account created. Check your email to confirm it, then sign in.');
-        } else {
-          this.renderOnlineAuth();
-          this.setOnlineNotice('[data-auth-notice]', 'Account ready. Your completed runs can now appear on the leaderboard.');
-          if (this.state === 'won') void this.submitCompletedRun();
-        }
+        if (!/^[A-Za-z0-9_]{3,32}$/.test(loginUsername)) throw new Error('Account username must be 3–32 letters, numbers, or underscores.');
+        if (!displayNameValue && loginUsername.length > 18) throw new Error('Choose an in-game name of 3–18 characters, or shorten your account username to use it as the default.');
+        if (!/^[A-Za-z0-9_]{3,18}$/.test(username)) throw new Error('In-game name must be 3–18 letters, numbers, or underscores.');
+        if (telegramUsername && !/^[A-Za-z0-9_]{5,32}$/.test(telegramUsername)) throw new Error('Telegram username must be 5–32 letters, numbers, or underscores.');
+        await this.online.signUp(loginUsername, username, telegramUsername, password);
+        this.renderOnlineAuth();
+        this.setOnlineNotice('[data-auth-notice]', 'Account ready. Your completed runs can now appear on the leaderboard.');
+        void this.loadOnlineProfile();
+        void this.loadMyPrizeClaims();
+        if (this.state === 'won') void this.submitCompletedRun();
       } else {
-        await this.online.signIn(email, password);
+        if (this.isAdminRoute()) {
+          await this.online.signInAdmin(password);
+          await this.syncOnlineAdminAccess();
+          if (this.onlineIsAdmin) {
+            this.openOnlinePanel('admin');
+            return;
+          }
+          this.renderOnlineAuth();
+          this.setOnlineNotice('[data-auth-notice]', 'This account does not have administrator access.');
+          return;
+        }
+        if (!/^[A-Za-z0-9_]{3,32}$/.test(loginUsername)) throw new Error('Enter your account username.');
+        await this.online.signIn(loginUsername, password);
         this.renderOnlineAuth();
         this.setOnlineNotice('[data-auth-notice]', 'Signed in. Your completed runs will be saved automatically.');
+        void this.loadOnlineProfile();
+        void this.loadMyPrizeClaims();
         if (this.state === 'won') void this.submitCompletedRun();
       }
     } catch (error) {
@@ -884,8 +1112,13 @@ class HeistScene extends Phaser.Scene {
   private async loadOnlineLeaderboard() {
     const overlay = this.onlineOverlay;
     const list = overlay?.querySelector<HTMLOListElement>('[data-board-list]');
-    if (!overlay || !list) return;
+    const podium = overlay?.querySelector<HTMLElement>('[data-board-podium]');
+    const head = overlay?.querySelector<HTMLElement>('[data-board-head]');
+    if (!overlay || !list || !podium || !head) return;
     list.replaceChildren();
+    podium.replaceChildren();
+    podium.hidden = true;
+    head.hidden = true;
     this.setOnlineNotice('[data-board-notice]', this.online.isConfigured ? 'Loading level leaderboard…' : 'Connect your Supabase project to load leaderboard scores.');
     try {
       const entries = await this.online.getLeaderboard(this.leaderboardLevel);
@@ -894,13 +1127,19 @@ class HeistScene extends Phaser.Scene {
         return;
       }
       this.setOnlineNotice('[data-board-notice]', '');
-      entries.forEach((entry: LeaderboardEntry, index: number) => {
+      const topThree = entries.slice(0, 3);
+      podium.dataset.count = String(topThree.length);
+      topThree.forEach((entry, index) => podium.append(this.createLeaderboardPodiumCard(entry, index + 1)));
+      podium.hidden = false;
+      const remaining = entries.slice(3);
+      head.hidden = remaining.length === 0;
+      remaining.forEach((entry: LeaderboardEntry, index: number) => {
         const row = document.createElement('li');
-        row.className = `online-board-row${index === 0 ? ' is-first' : ''}`;
+        row.className = 'online-board-row';
         const player = document.createElement('span');
         player.className = 'online-board-player';
         const rank = document.createElement('b');
-        rank.textContent = String(index + 1).padStart(2, '0');
+        rank.textContent = String(index + 4).padStart(2, '0');
         const name = document.createElement('strong');
         name.textContent = entry.username;
         player.append(rank, name);
@@ -910,8 +1149,7 @@ class HeistScene extends Phaser.Scene {
         const beans = document.createElement('span');
         beans.textContent = `${entry.beans_collected}/${entry.total_beans}`;
         const time = document.createElement('span');
-        const elapsedSeconds = Math.floor(entry.completion_time_ms / 1000);
-        time.textContent = `${String(Math.floor(elapsedSeconds / 60)).padStart(2, '0')}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+        time.textContent = formatRunTime(entry.completion_time_ms);
         row.append(player, score, beans, time);
         list.append(row);
       });
@@ -920,16 +1158,414 @@ class HeistScene extends Phaser.Scene {
     }
   }
 
+  private createLeaderboardPodiumCard(entry: LeaderboardEntry, rank: number) {
+    const card = document.createElement('article');
+    card.className = `online-podium-card is-rank-${rank}`;
+    const rankLabel = document.createElement('span');
+    rankLabel.className = 'podium-rank-label';
+    rankLabel.textContent = rank === 1 ? 'LEVEL CHAMPION' : rank === 2 ? 'RUNNER UP' : 'THIRD PLACE';
+    const identity = document.createElement('div');
+    identity.className = 'podium-identity';
+    const avatar = document.createElement('span');
+    avatar.className = 'podium-avatar';
+    const bean = document.createElement('img');
+    bean.src = '/assets/bean-idle-0-aligned-clean.png';
+    bean.alt = '';
+    avatar.append(bean);
+    const playerName = document.createElement('strong');
+    playerName.textContent = entry.username;
+    identity.append(avatar, playerName);
+    const scoreLabel = document.createElement('span');
+    scoreLabel.className = 'podium-score-label';
+    scoreLabel.textContent = 'BEST SCORE';
+    const score = document.createElement('b');
+    score.className = 'podium-score';
+    score.textContent = entry.score.toLocaleString();
+    const details = document.createElement('div');
+    details.className = 'podium-details';
+    const beans = document.createElement('span');
+    beans.textContent = `BEANS  ${entry.beans_collected}/${entry.total_beans}`;
+    const time = document.createElement('span');
+    time.textContent = `TIME  ${formatRunTime(entry.completion_time_ms)}`;
+    details.append(beans, time);
+    card.append(rankLabel, identity, scoreLabel, score, details);
+    return card;
+  }
+
   private setOnlineNotice(selector: string, message: string) {
     const notice = this.onlineOverlay?.querySelector<HTMLElement>(selector);
     if (notice) notice.textContent = message;
   }
 
+  private async loadOnlineProfile() {
+    const input = this.onlineOverlay?.querySelector<HTMLInputElement>('[name="account_telegram"]');
+    if (!this.online.user || !input) return;
+    try {
+      const profile = await this.online.getMyProfile();
+      if (profile && document.activeElement !== input) input.value = profile.telegram_username ? `@${profile.telegram_username}` : '';
+    } catch (error) {
+      this.setOnlineNotice('[data-profile-notice]', error instanceof Error ? error.message : 'Could not load your profile.');
+    }
+  }
+
+  private async saveOnlineProfile(event: Event) {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const input = form.querySelector<HTMLInputElement>('[name="account_telegram"]');
+    if (!input) return;
+    const telegramUsername = input.value.trim().replace(/^@/, '');
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(telegramUsername)) {
+      this.setOnlineNotice('[data-profile-notice]', 'Enter a Telegram username with 5–32 letters, numbers, or underscores.');
+      return;
+    }
+    try {
+      const saved = await this.online.updateTelegramUsername(telegramUsername);
+      input.value = `@${saved}`;
+      this.setOnlineNotice('[data-profile-notice]', 'Private Telegram username saved.');
+    } catch (error) {
+      this.setOnlineNotice('[data-profile-notice]', error instanceof Error ? error.message : 'Could not save your Telegram username.');
+    }
+  }
+
+  private async loadMyPrizeClaims() {
+    const target = this.onlineOverlay?.querySelector<HTMLDivElement>('[data-player-claims]');
+    if (!target || !this.online.user) return;
+    void this.loadMyWinSummary();
+    target.replaceChildren();
+    try {
+      const claims = await this.online.getMyPrizeClaims();
+      if (!claims.length) {
+        const note = document.createElement('p');
+        note.className = 'online-privacy-note';
+        note.textContent = 'No prize claims are available for this account yet.';
+        target.append(note);
+        return;
+      }
+      claims.forEach((claim: PlayerPrizeClaim) => {
+        const card = document.createElement('article');
+        card.className = 'player-claim-card';
+        const title = document.createElement('strong');
+        title.textContent = `LEVEL ${claim.level} · WIN ${new Date(claim.created_at).toLocaleDateString()}`;
+        const status = document.createElement('span');
+        status.className = `claim-status claim-status-${claim.status}`;
+        status.textContent = claim.status === 'redeemed' ? 'CLAIMED' : claim.status === 'expired' ? 'CLAIM WINDOW CLOSED' : claim.status === 'code_issued' ? 'CODE ISSUED' : 'ELIGIBLE';
+        card.append(title, status);
+        if (claim.claim_deadline) {
+          const deadline = document.createElement('small');
+          deadline.className = 'claim-deadline';
+          deadline.textContent = `Claim by ${new Date(claim.claim_deadline).toLocaleString()}`;
+          card.append(deadline);
+        }
+        if (claim.status === 'eligible' || claim.status === 'code_issued') {
+          const issue = document.createElement('button');
+          issue.className = 'online-secondary';
+          issue.type = 'button';
+          issue.textContent = claim.status === 'code_issued' ? 'GET A FRESH CODE' : 'GET CLAIM CODE';
+          issue.addEventListener('click', async () => {
+            issue.disabled = true;
+            this.setOnlineNotice('[data-profile-notice]', 'Creating a private, one-time code…');
+            try {
+              const code = await this.online.requestPrizeClaim(claim.claim_id);
+              const codeBox = document.createElement('div');
+              codeBox.className = 'claim-code-box';
+              const hint = document.createElement('small');
+              hint.textContent = 'Send this code privately from your listed Telegram account. It expires when the one-week claim window closes.';
+              const codeText = document.createElement('code');
+              codeText.textContent = code;
+              const copy = document.createElement('button');
+              copy.className = 'online-secondary';
+              copy.type = 'button';
+              copy.textContent = 'COPY CODE';
+              copy.addEventListener('click', async () => {
+                try { await navigator.clipboard.writeText(code); copy.textContent = 'COPIED'; }
+                catch { copy.textContent = 'SELECT AND COPY THE CODE'; }
+              });
+              codeBox.append(hint, codeText, copy);
+              card.querySelector('.claim-code-box')?.remove();
+              card.append(codeBox);
+              this.setOnlineNotice('[data-profile-notice]', 'Claim code created. Any older code for this prize is now invalid.');
+              status.textContent = 'CODE ISSUED';
+              status.className = 'claim-status claim-status-code_issued';
+              issue.textContent = 'GET A FRESH CODE';
+            } catch (error) {
+              this.setOnlineNotice('[data-profile-notice]', error instanceof Error ? error.message : 'Could not create a claim code.');
+              if (error instanceof Error && error.message.includes('claim window has ended')) void this.loadMyPrizeClaims();
+            } finally { issue.disabled = false; }
+          });
+          card.append(issue);
+        } else if (claim.status === 'redeemed') {
+          const redeemed = document.createElement('small');
+          redeemed.textContent = 'This prize has already been redeemed.';
+          card.append(redeemed);
+        } else if (claim.status === 'expired') {
+          const expired = document.createElement('small');
+          expired.textContent = 'The one-week prize claim window has ended.';
+          card.append(expired);
+        }
+        target.append(card);
+      });
+    } catch (error) {
+      const note = document.createElement('p');
+      note.className = 'online-privacy-note';
+      note.textContent = error instanceof Error ? error.message : 'Could not load prize claims.';
+      target.append(note);
+    }
+  }
+
+  private async loadMyWinSummary() {
+    const target = this.onlineOverlay?.querySelector<HTMLElement>('[data-player-wins]');
+    if (!target || !this.online.user) return;
+    try {
+      const summary = (await this.online.getMyWinSummary())[0];
+      if (!summary) return;
+      target.replaceChildren();
+      const total = document.createElement('strong'); total.className = 'player-win-total';
+      total.textContent = `${summary.total_wins} ${summary.total_wins === 1 ? 'WIN' : 'WINS'}`;
+      const levels = document.createElement('div'); levels.className = 'player-win-levels';
+      [summary.level_1_wins, summary.level_2_wins, summary.level_3_wins].forEach((wins, index) => {
+        const item = document.createElement('span');
+        item.textContent = `LEVEL ${index + 1} · ${wins}`;
+        levels.append(item);
+      });
+      target.append(total, levels);
+    } catch {
+      target.textContent = 'Win history is temporarily unavailable.';
+    }
+  }
+
+  private async syncOnlineAdminAccess() {
+    this.onlineIsAdmin = false;
+    if (this.online.user && this.online.isConfigured) {
+      try { this.onlineIsAdmin = await this.online.isAdmin(); } catch { this.onlineIsAdmin = false; }
+    }
+    const button = this.onlineOverlay?.querySelector<HTMLButtonElement>('[data-open-admin]');
+    if (button) button.hidden = !this.onlineIsAdmin;
+    if (!this.onlineIsAdmin && this.onlineOverlay?.dataset.view === 'admin') this.openOnlinePanel('auth');
+  }
+
+  private async loadAdminPage() {
+    if (!this.online.user || !this.onlineIsAdmin) {
+      this.setOnlineNotice('[data-admin-board-notice]', 'Administrator access is required.');
+      return;
+    }
+    await Promise.all([this.loadAdminOverview(), this.loadAdminLevelSettings(), this.loadAdminLeaderboard(), this.loadAdminPrizeClaims(), this.loadAdminModerationLog(), this.loadAdminResetHistory()]);
+  }
+
+  private async loadAdminResetHistory() {
+    const list = this.onlineOverlay?.querySelector<HTMLOListElement>('[data-admin-reset-list]');
+    if (!list) return;
+    list.replaceChildren();
+    try {
+      const history = await this.online.getAdminLeaderboardResets();
+      if (!history.length) { const item = document.createElement('li'); item.className = 'online-privacy-note'; item.textContent = 'No leaderboard resets yet.'; list.append(item); return; }
+      history.forEach(reset => {
+        const item = document.createElement('li'); item.className = 'admin-claim-row';
+        const details = document.createElement('span');
+        details.textContent = `${reset.level ? `Level ${reset.level}` : 'All levels'} · ${reset.entries_removed} scores cleared · ${reset.winner_summary ?? 'No winner recorded'} · ${new Date(reset.cleared_at).toLocaleString()}`;
+        item.append(details); list.append(item);
+      });
+    } catch (error) { const item = document.createElement('li'); item.className = 'online-privacy-note'; item.textContent = error instanceof Error ? error.message : 'Could not load reset history.'; list.append(item); }
+  }
+
+  private async clearAdminLeaderboard(level: number | null) {
+    const scope = level === null ? 'all three levels' : `Level ${level}`;
+    const confirmed = window.confirm(`Finalize and clear ${scope}? Close the level first so no more scores can be submitted. The marked player wins and receives a prize claim; with no marked player, the highest-ranked player wins without a prize. Scores disappear from player leaderboards, while accounts and existing claims remain. The results will be archived.`);
+    if (!confirmed) return;
+    const buttons = this.onlineOverlay?.querySelectorAll<HTMLButtonElement>('[data-clear-board]');
+    buttons?.forEach(button => { button.disabled = true; });
+    this.setOnlineNotice('[data-admin-board-notice]', `Clearing ${scope.toLowerCase()} leaderboard…`);
+    try {
+      const removed = await this.online.clearAdminLeaderboard(level);
+      await Promise.all([this.loadAdminLeaderboard(), this.loadAdminOverview(), this.loadAdminPrizeClaims(), this.loadAdminResetHistory()]);
+      this.setOnlineNotice('[data-admin-board-notice]', removed
+        ? `Cleared ${removed} saved score${removed === 1 ? '' : 's'} from ${scope.toLowerCase()}. The winner was recorded; player accounts and existing claims were kept.`
+        : `There were no scores to clear in ${scope.toLowerCase()}, so no winner was recorded.`);
+    } catch (error) {
+      this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not clear leaderboard.');
+    } finally { buttons?.forEach(button => { button.disabled = false; }); }
+  }
+
+  private async loadAdminModerationLog() {
+    const list = this.onlineOverlay?.querySelector<HTMLOListElement>('[data-admin-audit-list]');
+    if (!list) return;
+    list.replaceChildren();
+    try {
+      const rows = await this.online.getAdminModerationLog();
+      if (!rows.length) { const empty = document.createElement('li'); empty.className = 'online-privacy-note'; empty.textContent = 'No scores have been removed.'; list.append(empty); return; }
+      rows.forEach((record: AdminModerationRecord) => {
+        const item = document.createElement('li'); item.className = 'admin-claim-row';
+        const info = document.createElement('span'); info.textContent = `${record.username ?? record.player_id.slice(0, 8)} · Level ${record.level} · ${record.score.toLocaleString()} · ${record.reason.replaceAll('_', ' ')} · ${new Date(record.deleted_at).toLocaleString()}`;
+        item.append(info); list.append(item);
+      });
+    } catch (error) { const item = document.createElement('li'); item.className = 'online-privacy-note'; item.textContent = error instanceof Error ? error.message : 'Could not load moderation history.'; list.append(item); }
+  }
+
+  private async loadAdminOverview() {
+    try {
+      const summary = await this.online.getAdminOverview();
+      const overlay = this.onlineOverlay;
+      if (!overlay) return;
+      overlay.querySelector('[data-admin-players]')!.textContent = summary.players.toLocaleString();
+      overlay.querySelector('[data-admin-scores]')!.textContent = summary.scores.toLocaleString();
+      overlay.querySelector('[data-admin-pending]')!.textContent = summary.pending_claims.toLocaleString();
+    } catch (error) { this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not load dashboard summary.'); }
+  }
+
+  private async loadAdminLevelSettings() {
+    const host = this.onlineOverlay?.querySelector<HTMLElement>('[data-admin-level-controls]');
+    if (!host) return;
+    host.replaceChildren();
+    try {
+      const settings = await this.online.getAdminLevelSettings();
+      this.closedLevels = new Set(settings.filter(level => !level.is_open).map(level => level.level));
+      this.levelAvailabilityLoaded = true;
+      settings.forEach(level => {
+        const item = document.createElement('div'); item.className = 'admin-level-control';
+        const label = document.createElement('span'); label.innerHTML = `<b>LEVEL ${level.level}</b><small>${level.is_open ? 'Available to players' : 'Hidden and unavailable'}</small>`;
+        const button = document.createElement('button'); button.className = `settings-toggle ${level.is_open ? 'is-open' : ''}`; button.type = 'button'; button.dataset.toggleLevel = String(level.level); button.dataset.open = String(level.is_open); button.setAttribute('aria-pressed', String(level.is_open)); button.textContent = level.is_open ? 'OPEN' : 'CLOSED';
+        item.append(label, button); host.append(item);
+      });
+      this.syncLevelAvailability();
+    } catch (error) { host.textContent = error instanceof Error ? error.message : 'Could not load level availability.'; }
+  }
+
+  private async toggleAdminLevel(level: number, isOpen: boolean) {
+    const button = this.onlineOverlay?.querySelector<HTMLButtonElement>(`[data-toggle-level="${level}"]`);
+    if (!button) return;
+    button.disabled = true;
+    try { await this.online.setAdminLevelOpen(level, isOpen); await this.loadAdminLevelSettings(); }
+    catch (error) { this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not update level access.'); }
+    finally { button.disabled = false; }
+  }
+
+  private syncLevelAvailability() {
+    const cards = this.levelMenu?.querySelectorAll<HTMLButtonElement>('.level-card');
+    cards?.forEach((card, index) => {
+      const closed = this.closedLevels.has(index + 1);
+      card.disabled = closed;
+      const status = card.querySelector<HTMLElement>('.level-status');
+      if (status && closed) status.textContent = 'CURRENTLY CLOSED';
+      else if (status) status.textContent = index < this.unlockedLevel ? 'COMPLETED · REPLAY' : 'READY TO PLAY';
+    });
+  }
+
+  private async loadAdminLeaderboard() {
+    const list = this.onlineOverlay?.querySelector<HTMLOListElement>('[data-admin-leaderboard]');
+    if (!list) return;
+    list.replaceChildren();
+    this.setOnlineNotice('[data-admin-board-notice]', 'Loading level results…');
+    try {
+      const entries = await this.online.getAdminLeaderboard(this.adminLevel);
+      if (!entries.length) {
+        this.setOnlineNotice('[data-admin-board-notice]', 'No completed runs for this level yet.');
+        return;
+      }
+      entries.forEach((entry: AdminLeaderboardEntry, index: number) => {
+        const row = document.createElement('li');
+        row.className = 'admin-player-row';
+        const details = document.createElement('div');
+        details.className = 'admin-player-details';
+        const name = document.createElement('strong');
+        name.textContent = `${String(index + 1).padStart(2, '0')}  ${entry.username}`;
+        const telegram = document.createElement('small');
+        telegram.textContent = entry.telegram_username ? `@${entry.telegram_username}` : 'Telegram username not set';
+        details.append(name, telegram);
+        const score = document.createElement('span');
+        score.className = 'admin-player-score';
+        score.textContent = `${entry.score.toLocaleString()} · ${entry.beans_collected}/${entry.total_beans}`;
+        const button = document.createElement('button');
+        button.className = entry.is_winner ? 'online-secondary is-selected' : 'online-secondary';
+        button.type = 'button';
+        button.textContent = entry.is_winner ? 'REMOVE WINNER' : 'MARK WINNER';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await this.online.setPrizeWinner(entry.player_id, this.adminLevel, !entry.is_winner);
+            await this.loadAdminLeaderboard();
+            this.setOnlineNotice('[data-admin-board-notice]', entry.is_winner
+              ? 'Manual winner selection cleared. Clearing this board will now award the win to the highest-ranked player with no reward.'
+              : `${entry.username} selected as manual winner and reward recipient. This takes effect when the board is cleared.`);
+          } catch (error) {
+            this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not update winner eligibility.');
+            button.disabled = false;
+          }
+        });
+        row.append(details, score, button);
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'admin-delete-score'; remove.textContent = 'REMOVE SCORE';
+        remove.addEventListener('click', async () => {
+          const reason = row.querySelector<HTMLSelectElement>('[data-score-reason]')?.value ?? '';
+          if (!reason) { this.setOnlineNotice('[data-admin-board-notice]', 'Choose a moderation reason before removing this score.'); return; }
+          if (!window.confirm(`Remove ${entry.username}'s Level ${this.adminLevel} score of ${entry.score.toLocaleString()}? The result will be recorded in moderation history.`)) return;
+          remove.disabled = true;
+          try { await this.online.deleteAdminScore(entry.player_id, this.adminLevel, reason); await Promise.all([this.loadAdminLeaderboard(), this.loadAdminOverview(), this.loadAdminPrizeClaims(), this.loadAdminModerationLog()]); }
+          catch (error) { this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not remove score.'); remove.disabled = false; }
+        });
+        const reason = document.createElement('select'); reason.dataset.scoreReason = ''; reason.setAttribute('aria-label', `Reason for removing ${entry.username}'s score`);
+        reason.innerHTML = '<option value="">Reason…</option><option value="impossible_score">Impossible score</option><option value="invalid_run">Invalid run</option><option value="duplicate_or_exploit">Duplicate or exploit</option><option value="other">Other / suspected cheating</option>';
+        const moderation = document.createElement('div'); moderation.className = 'admin-score-actions'; moderation.append(reason, remove); row.append(moderation);
+        list.append(row);
+      });
+      this.setOnlineNotice('[data-admin-board-notice]', 'Mark one player for a rewarded win before clearing; otherwise, the top-ranked player wins without a reward.');
+    } catch (error) {
+      this.setOnlineNotice('[data-admin-board-notice]', error instanceof Error ? error.message : 'Could not load admin results.');
+    }
+  }
+
+  private async loadAdminPrizeClaims() {
+    const list = this.onlineOverlay?.querySelector<HTMLOListElement>('[data-admin-claims-list]');
+    if (!list) return;
+    list.replaceChildren();
+    try {
+      const claims = await this.online.getAdminPrizeClaims();
+      if (!claims.length) {
+        const item = document.createElement('li');
+        item.className = 'online-privacy-note';
+        item.textContent = 'No prize claims yet.';
+        list.append(item);
+        return;
+      }
+      claims.forEach((claim: AdminPrizeClaim) => {
+        const item = document.createElement('li');
+        item.className = 'admin-claim-row';
+        const info = document.createElement('span');
+        info.textContent = `${claim.username} · Level ${claim.level} · ${claim.score?.toLocaleString() ?? '—'} · ${new Date(claim.created_at).toLocaleDateString()} · Claim by ${claim.claim_deadline ? new Date(claim.claim_deadline).toLocaleDateString() : '—'} · ${claim.telegram_username ? `@${claim.telegram_username}` : 'No Telegram username'}`;
+        const status = document.createElement('b');
+        status.textContent = claim.status === 'redeemed' ? 'REDEEMED' : claim.status === 'expired' ? 'EXPIRED' : claim.status === 'code_issued' ? 'CODE ISSUED' : 'ELIGIBLE';
+        item.append(info, status);
+        list.append(item);
+      });
+    } catch (error) {
+      const item = document.createElement('li');
+      item.className = 'online-privacy-note';
+      item.textContent = error instanceof Error ? error.message : 'Could not load prize claims.';
+      list.append(item);
+    }
+  }
+
+  private async redeemOnlinePrize(event: Event) {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const code = String(new FormData(form).get('claim_code') ?? '').trim();
+    this.setOnlineNotice('[data-admin-redeem-notice]', 'Verifying and redeeming code…');
+    try {
+      const winner = await this.online.redeemPrizeClaim(code);
+      if (!winner) throw new Error('The code could not be matched.');
+      form.reset();
+      this.setOnlineNotice('[data-admin-redeem-notice]', `Verified ${winner.username} for Level ${winner.level} (${winner.score?.toLocaleString() ?? 'score unavailable'} points). Telegram: ${winner.telegram_username ? `@${winner.telegram_username}` : 'not provided'}. Claim marked redeemed.`);
+      await this.loadAdminPrizeClaims();
+      await this.loadAdminLeaderboard();
+    } catch (error) {
+      this.setOnlineNotice('[data-admin-redeem-notice]', error instanceof Error ? error.message : 'Could not redeem this code.');
+    }
+  }
+
   private syncOnlineEntryPoints() {
     document.querySelectorAll<HTMLButtonElement>('[data-open-auth]').forEach(button => {
-      button.textContent = this.online.user ? `@${this.online.username.slice(0, 10)}` : 'Sign in';
+      button.textContent = this.online.user ? 'My profile' : 'Sign in';
       button.setAttribute('aria-label', this.online.user ? `Account: ${this.online.username}` : 'Sign in or create account');
     });
+    void this.syncOnlineAdminAccess();
     if (this.onlineOverlay?.dataset.view === 'auth') this.renderOnlineAuth();
   }
 
@@ -937,7 +1573,7 @@ class HeistScene extends Phaser.Scene {
     if (!this.online.isConfigured || !this.online.user) return;
     try {
       const collected = this.coins.filter(coin => coin.taken).length;
-      const updated = await this.online.submitScore(this.levelIndex + 1, this.score, collected, this.coins.length, Math.max(1, Math.round(this.elapsed * 1000)));
+      const updated = await this.online.submitScore(this.levelIndex + 1, this.score, collected, this.coins.length, Math.max(1, Math.round(this.runElapsedMs)));
       this.leaderboardRunStatus = updated ? 'Your best run is now on the leaderboard.' : 'Your previous best run remains on the leaderboard.';
     } catch (error) {
       this.leaderboardRunStatus = error instanceof Error ? error.message : 'Could not save this run to the leaderboard.';
@@ -1089,6 +1725,14 @@ class HeistScene extends Phaser.Scene {
         button.setAttribute('aria-pressed', String(enabled));
       }
     });
+    const fullscreenButton = this.gameTopControls?.querySelector<HTMLButtonElement>('[data-action="fullscreen"]');
+    if (fullscreenButton) {
+      const fullscreen = this.scale.isFullscreen;
+      fullscreenButton.setAttribute('aria-pressed', String(fullscreen));
+      fullscreenButton.setAttribute('aria-label', fullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+      const label = fullscreenButton.querySelector('small');
+      if (label) label.textContent = fullscreen ? 'EXIT FULL' : 'FULL';
+    }
     for (const [kind, value] of [['music', this.musicVolume], ['effects', this.soundEffectsVolume]] as const) {
       const range = this.settingsMenu?.querySelector<HTMLInputElement>(`#${kind}-volume-range`);
       if (range) {
@@ -1265,17 +1909,33 @@ class HeistScene extends Phaser.Scene {
     this.startBackgroundMusic();
     this.updateMusicMix();
     this.playGameSound('menu');
+    if (this.online.isConfigured) void this.refreshLevelAvailability();
     const cards = this.levelMenu?.querySelectorAll<HTMLButtonElement>('.level-card');
     cards?.forEach((card, index) => {
-      card.disabled = index > this.unlockedLevel;
-      card.querySelector('.level-status')!.textContent = index > this.unlockedLevel ? 'LOCKED' : index < this.unlockedLevel ? 'COMPLETED · REPLAY' : 'READY TO PLAY';
+      card.disabled = false;
+      card.querySelector('.level-status')!.textContent = index < this.unlockedLevel ? 'COMPLETED · REPLAY' : 'READY TO PLAY';
     });
+    this.syncLevelAvailability();
+  }
+
+  private async refreshLevelAvailability() {
+    try {
+      const settings = await this.online.getLevelSettings();
+      this.closedLevels = new Set(settings.filter(level => !level.is_open).map(level => level.level));
+      this.levelAvailabilityLoaded = true;
+      this.syncLevelAvailability();
+    } catch { this.levelAvailabilityLoaded = true; /* If online access is unavailable, preserve the current local level menu. */ }
   }
 
   private startGame(level = this.levelIndex) {
     if (this.state === 'playing' || this.state === 'paused') return;
+    if (this.online.isConfigured && !this.levelAvailabilityLoaded) {
+      void this.refreshLevelAvailability().then(() => this.startGame(level));
+      return;
+    }
+    if (this.closedLevels.has(level + 1)) { this.showLevelSelect(); return; }
     if (this.requiresLandscape()) {
-      this.pendingLandscapeLevel = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+      this.pendingLandscapeLevel = Phaser.Math.Clamp(level, 0, 2);
       this.updateOrientationGate(false);
       this.orientationGate?.classList.add('is-visible');
       this.orientationGate?.setAttribute('aria-hidden', 'false');
@@ -1286,7 +1946,7 @@ class HeistScene extends Phaser.Scene {
     this.gameResultActions?.classList.remove('is-visible');
     this.orientationGate?.classList.remove('is-visible');
     this.orientationGate?.setAttribute('aria-hidden', 'true');
-    this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+    this.levelIndex = Phaser.Math.Clamp(level, 0, 2);
     this.levelMenu?.classList.remove('is-visible');
     this.landingMenu?.classList.remove('is-visible');
     this.titleStartZone?.disableInteractive();
@@ -1404,10 +2064,10 @@ class HeistScene extends Phaser.Scene {
     this.player = { x: spawnX, y: spawnSurfaceY - 34, vx: 0, vy: 0, grounded: true };
     this.coins.forEach(c => { c.locked = c.crateIndex !== undefined; });
     this.crates.forEach(crate => { crate.broken = false; });
-    this.score = 0; this.lives = 3; this.timeLeft = RUN_TIME_SECONDS; this.elapsed = 0; this.hurtTimer = 0; this.animTime = 0; this.leaderboardRunStatus = '';
+    this.score = 0; this.lives = 3; this.timeLeft = RUN_TIME_SECONDS; this.elapsed = 0; this.runElapsedMs = 0; this.hurtTimer = 0; this.animTime = 0; this.leaderboardRunStatus = '';
     this.heroGait = 0; this.jumpAnticipationTimer = 0; this.jumpBufferTimer = 0; this.coyoteTimer = 0; this.autoLeapForward = false; this.landingTimer = 0; this.landingSquash = 0;
     this.checkpointX = spawnX; this.checkpointY = spawnSurfaceY - 34; this.nextCheckpointIndex = 0;
-    this.levelIndex = Phaser.Math.Clamp(level, 0, this.unlockedLevel);
+    this.levelIndex = Phaser.Math.Clamp(level, 0, 2);
     this.tweens.killTweensOf(this.levelBanner);
     this.levelBanner.setVisible(false).setAlpha(0).setY(145);
     this.chestOpened = false; this.chestAnimTimer = 0;
@@ -1619,6 +2279,23 @@ class HeistScene extends Phaser.Scene {
     this.laserPostSprites.forEach((pair, gateIndex) => pair.forEach((_, postIndex) => addSpriteNode(`laser-${gateIndex}-${postIndex}`, 'crisp-laser-post')));
     addSpriteNode('refill', 'crisp-refill');
     addSpriteNode('extra-life', 'crisp-extra-life');
+
+    // DOM sprites use separate image elements from Phaser's texture cache.
+    // Decode every animation frame ahead of play so the first walk cycle does
+    // not hitch while the browser decodes a newly selected frame.
+    const animationAssets = [
+      ...Array.from({ length: 3 }, (_, frame) => `/assets/bean-idle-${frame}-aligned-clean.png`),
+      ...Array.from({ length: 6 }, (_, frame) => `/assets/bean-walk-${frame}-aligned-clean.png`),
+      ...Array.from({ length: 4 }, (_, frame) => `/assets/bean-jump-${frame}-aligned-clean.png`),
+      ...Array.from({ length: 6 }, (_, frame) => `/assets/guard-walk-${frame}-aligned.png`),
+      '/assets/guard-idle-aligned.png', '/assets/guard-stunned-aligned.png',
+    ];
+    this.crispPreloadedImages = animationAssets.map(src => {
+      const image = new Image();
+      image.src = src;
+      void image.decode?.().catch(() => undefined);
+      return image;
+    });
   }
 
   private setCrispOverlayActive(active: boolean) {
@@ -1645,35 +2322,46 @@ class HeistScene extends Phaser.Scene {
     const node = this.crispWorldNodes.get(key);
     if (!node) return;
     const asset = this.crispAssetFor(sprite.texture.key);
-    if (!visible || !asset) {
-      node.style.display = 'none';
+    const camera = this.cameras.main;
+    const cameraLeft = camera.scrollX - 220;
+    const cameraRight = camera.scrollX + camera.width / camera.zoomX + 220;
+    if (!visible || !asset || sprite.x + sprite.displayWidth / 2 < cameraLeft || sprite.x - sprite.displayWidth / 2 > cameraRight) {
+      if (node.style.display !== 'none') node.style.display = 'none';
       return;
     }
     if (node.dataset.asset !== asset) {
       node.src = asset;
       node.dataset.asset = asset;
     }
-    const camera = this.cameras.main;
     const worldX = sprite.x - camera.scrollX * sprite.scrollFactorX;
     const worldY = sprite.y - camera.scrollY * sprite.scrollFactorY;
     const cameraMatrix = (camera as typeof camera & { matrix: { transformPoint(x: number, y: number): { x: number; y: number } } }).matrix;
     const screen = cameraMatrix.transformPoint(worldX, worldY);
     const width = sprite.displayWidth * camera.zoomX;
     const height = sprite.displayHeight * camera.zoomY;
-    node.style.display = 'block';
-    node.style.left = `${screen.x - sprite.originX * width}px`;
-    node.style.top = `${screen.y - sprite.originY * height}px`;
-    node.style.width = `${width}px`;
-    node.style.height = `${height}px`;
-    node.style.opacity = String(sprite.alpha);
-    node.style.zIndex = String(Math.round(sprite.depth * 10));
-    node.style.transformOrigin = `${sprite.originX * 100}% ${sprite.originY * 100}%`;
-    node.style.transform = `${sprite.flipX ? 'scaleX(-1) ' : ''}rotate(${sprite.rotation}rad)`;
+    if (node.style.display !== 'block') node.style.display = 'block';
+    const left = `${screen.x - sprite.originX * width}px`;
+    const top = `${screen.y - sprite.originY * height}px`;
+    const cssWidth = `${width}px`;
+    const cssHeight = `${height}px`;
+    const opacity = String(sprite.alpha);
+    const zIndex = String(Math.round(sprite.depth * 10));
+    const transformOrigin = `${sprite.originX * 100}% ${sprite.originY * 100}%`;
+    const transform = `${sprite.flipX ? 'scaleX(-1) ' : ''}rotate(${sprite.rotation}rad)`;
+    if (node.style.left !== left) node.style.left = left;
+    if (node.style.top !== top) node.style.top = top;
+    if (node.style.width !== cssWidth) node.style.width = cssWidth;
+    if (node.style.height !== cssHeight) node.style.height = cssHeight;
+    if (node.style.opacity !== opacity) node.style.opacity = opacity;
+    if (node.style.zIndex !== zIndex) node.style.zIndex = zIndex;
+    if (node.style.transformOrigin !== transformOrigin) node.style.transformOrigin = transformOrigin;
+    if (node.style.transform !== transform) node.style.transform = transform;
     const tint = (sprite as Phaser.GameObjects.Image & { tintTopLeft?: number }).tintTopLeft;
-    node.style.filter = tint === 0xffbc55
+    const filter = tint === 0xffbc55
       ? 'sepia(1) saturate(3) hue-rotate(350deg)'
       : tint === 0x778393 ? 'grayscale(.72) brightness(.78)'
         : tint === 0xff5048 ? 'sepia(1) saturate(5) hue-rotate(300deg)' : '';
+    if (node.style.filter !== filter) node.style.filter = filter;
   }
 
   private syncCrispWorldSprites() {
@@ -1942,6 +2630,7 @@ class HeistScene extends Phaser.Scene {
     }
     const dt = Math.min(delta / 1000, 0.04);
     this.elapsed += dt;
+    this.runElapsedMs += dt * 1000;
     this.animTime += dt;
     this.guardLightRefreshTimer = Math.max(0, this.guardLightRefreshTimer - dt);
     this.hurtTimer = Math.max(0, this.hurtTimer - dt);
@@ -1952,10 +2641,11 @@ class HeistScene extends Phaser.Scene {
     this.landingSquash = Math.max(0, this.landingSquash - dt * 5.5);
     if (this.chestOpened) this.chestAnimTimer = Math.min(1.05, this.chestAnimTimer + dt);
     this.updateGuards(dt);
-    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power1)) this.activatePowerup(0);
-    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power2)) this.activatePowerup(1);
-    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power3)) this.activatePowerup(2);
-    if (Phaser.Input.Keyboard.JustDown((this.keys as any).power4)) this.activatePowerup(3);
+    const keyboardBlocked = this.isGameplayKeyboardBlocked();
+    if (!keyboardBlocked && Phaser.Input.Keyboard.JustDown((this.keys as any).power1)) this.activatePowerup(0);
+    if (!keyboardBlocked && Phaser.Input.Keyboard.JustDown((this.keys as any).power2)) this.activatePowerup(1);
+    if (!keyboardBlocked && Phaser.Input.Keyboard.JustDown((this.keys as any).power3)) this.activatePowerup(2);
+    if (!keyboardBlocked && Phaser.Input.Keyboard.JustDown((this.keys as any).power4)) this.activatePowerup(3);
     if (this.elapsed >= 1) {
       const elapsedSeconds = Math.floor(this.elapsed);
       this.timeLeft = Math.max(0, this.timeLeft - elapsedSeconds);
@@ -1965,10 +2655,10 @@ class HeistScene extends Phaser.Scene {
       this.finishRun('timeout');
       return;
     }
-    const left = this.touchLeft || this.keys.left.isDown || this.keys.a.isDown || !!this.cursors?.left.isDown;
-    const right = this.touchRight || this.keys.right.isDown || this.keys.d.isDown || !!this.cursors?.right.isDown;
-    const jumpPressed = this.touchJumpPressed || Phaser.Input.Keyboard.JustDown(this.keys.jump) || Phaser.Input.Keyboard.JustDown(this.keys.w) || Phaser.Input.Keyboard.JustDown(this.keys.space) || !!(this.cursors && Phaser.Input.Keyboard.JustDown(this.cursors.up));
-    const jumpHeld = this.touchJumpHeld || this.keys.jump.isDown || this.keys.w.isDown || this.keys.space.isDown || !!this.cursors?.up.isDown;
+    const left = this.touchLeft || (!keyboardBlocked && (this.keys.left.isDown || this.keys.a.isDown || !!this.cursors?.left.isDown));
+    const right = this.touchRight || (!keyboardBlocked && (this.keys.right.isDown || this.keys.d.isDown || !!this.cursors?.right.isDown));
+    const jumpPressed = this.touchJumpPressed || (!keyboardBlocked && (Phaser.Input.Keyboard.JustDown(this.keys.jump) || Phaser.Input.Keyboard.JustDown(this.keys.w) || Phaser.Input.Keyboard.JustDown(this.keys.space) || !!(this.cursors && Phaser.Input.Keyboard.JustDown(this.cursors.up))));
+    const jumpHeld = this.touchJumpHeld || (!keyboardBlocked && (this.keys.jump.isDown || this.keys.w.isDown || this.keys.space.isDown || !!this.cursors?.up.isDown));
     this.touchJumpPressed = false;
     const moveSpeed = this.speedTimer > 0 ? 520 : 335;
     const targetVx = left === right
