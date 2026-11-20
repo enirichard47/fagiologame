@@ -233,7 +233,7 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
 .loader-route::before { display: block; position: absolute; z-index: 1; bottom: -42px; left: 50%; width: 100vw; height: 42px; border: 0; border-top: 7px solid #8bd943; border-radius: 0; background: repeating-linear-gradient(90deg, transparent 0 92px, rgba(32,48,91,.45) 93px 96px), linear-gradient(180deg, #6577a4 0%, #46567f 44%, #263d63 100%); box-shadow: 0 -5px 0 rgba(53,107,46,.85), 0 8px 15px rgba(5,20,37,.42); content: ''; transform: translateX(-50%); }
 .loader-route::after { display: none; }
 .loader-runner-mover { bottom: -19px; width: 240px; height: 186px; }
-.loader-bean { object-fit: fill; }
+.loader-bean { object-fit: contain; }
 .loader-bean.is-jumping { transform: translateY(-62px); }
 .route-shadow { bottom: -3px; z-index: 1; width: 116px; height: 12px; background: rgba(20,34,28,.46); }
 .loader-progress { position: absolute; bottom: 10vh; left: 50%; width: min(510px, 78vw); gap: 13px; padding: 11px 14px; border: 2px solid rgba(17,47,88,.88); border-radius: 12px; background: linear-gradient(145deg, rgba(9,69,144,.92), rgba(6,44,105,.9)); box-shadow: 0 4px 0 rgba(7,34,76,.8), inset 0 1px 0 rgba(255,255,255,.35); transform: translateX(-50%); }
@@ -720,7 +720,7 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
   .report-actions button { min-height: 40px; padding: 7px 8px; border-radius: 9px; font-size: 11px; }
   .report-footnote { display: none; }
   .game-top-controls { top: max(6px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); gap: 4px; }
-  .crisp-readouts { top: 6px; right: max(226px, calc(218px + env(safe-area-inset-right))); left: max(8px, env(safe-area-inset-left)); height: 46px; border-radius: 8px; }
+  .crisp-readouts { top: 6px; right: max(238px, calc(230px + env(safe-area-inset-right))); left: max(8px, env(safe-area-inset-left)); height: 46px; border-radius: 8px; }
   .crisp-stat { padding-left: 5px; }
   .crisp-stat > span { font-size: 8px; letter-spacing: .04em; }
   .crisp-stat strong { font-size: 16px; }
@@ -728,10 +728,10 @@ body { width: 100%; height: 100dvh; background: #071a42; font-family: "Trebuchet
   .crisp-life-pips { gap: 1px; }
   .crisp-life-pips i { width: 6px; height: 6px; }
   .crisp-stat .crisp-life-stat strong, .crisp-life-stat strong { font-size: 9px; }
-  .game-top-button { width: 44px; min-width: 44px; min-height: 48px; gap: 1px; padding: 3px; border-radius: 9px; }
-  .top-button-icon { width: 24px; height: 24px; border-radius: 7px; font-size: 18px; }
-  .game-top-button small { font-size: 6px; letter-spacing: .07em; }
-  .settings-icon::before, .exit-icon::before, .fullscreen-icon::before { font-size: 20px; }
+  .game-top-button { width: 52px; min-width: 52px; min-height: 54px; gap: 2px; padding: 3px; border-radius: 9px; }
+  .top-button-icon { width: 25px; height: 25px; border-radius: 7px; font-size: 18px; }
+  .game-top-button small { font-size: 8px; line-height: 1; letter-spacing: .035em; }
+  .settings-icon::before, .exit-icon::before, .fullscreen-icon::before { font-size: 19px; }
   .pause-icon { gap: 4px; }
   .pause-icon i { width: 4px; height: 12px; }
 

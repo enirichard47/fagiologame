@@ -267,7 +267,7 @@ class HeistScene extends Phaser.Scene {
       this.preloader = preloaderFromMarkup ?? document.createElement('div');
       this.preloader.className = 'game-preloader';
       if (!preloaderFromMarkup) {
-        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/bean-idle-0-aligned-clean.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="orientation-hint"><span class="orientation-phone" aria-hidden="true"></span><span class="orientation-hint-copy"><b>LANDSCAPE FOR THE BEST HEIST</b><small>Rotate your phone while Fagiolo gets ready.</small></span></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/bean-walk-0-aligned-clean.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
+        this.preloader.innerHTML = `<div class="loader-copy"><img class="loader-avatar" src="/assets/fagiolo-idle-v2-0.png" alt=""><div class="loader-brand-copy"><h1 class="loader-title"><span>FAGIOLO</span><em>HEIST!</em></h1><p class="loader-kicker">PREPARING THE GREAT ESCAPE</p></div></div><div class="orientation-hint"><span class="orientation-phone" aria-hidden="true"></span><span class="orientation-hint-copy"><b>LANDSCAPE FOR THE BEST HEIST</b><small>Rotate your phone while Fagiolo gets ready.</small></span></div><div class="loader-route"><div class="loader-runner-mover"><img class="loader-bean" src="/assets/fagiolo-walk-v2-0.png" alt="Fagiolo walking"></div><span class="route-shadow"></span></div><div class="loader-progress"><div class="loader-track"><i></i></div><span class="loader-percent">0%</span></div><p class="loader-caption">FAGIOLO IS MAKING A GETAWAY</p>`;
         mount.append(this.preloader);
       }
       // Vite/dev restarts can leave the static loader and a generated loader
@@ -281,25 +281,30 @@ class HeistScene extends Phaser.Scene {
       let loaderStartedAt = 0;
       const fill = this.preloader.querySelector('.loader-track i') as HTMLElement;
       const percent = this.preloader.querySelector('.loader-percent') as HTMLElement;
-      const runner = this.preloader.querySelector('.loader-bean') as HTMLImageElement;
+      const runnerImage = this.preloader.querySelector('.loader-bean') as HTMLImageElement;
       const runnerMover = this.preloader.querySelector('.loader-runner-mover') as HTMLElement;
       const runnerShadow = this.preloader.querySelector('.route-shadow') as HTMLElement;
       const route = this.preloader.querySelector('.loader-route') as HTMLElement;
       const runnerFrames = Array.from({ length: 6 }, (_, frame) => {
         const image = new Image();
-        image.src = `/assets/bean-walk-${frame}-aligned-clean.png`;
+        image.src = `/assets/fagiolo-walk-v2-${frame}.png`;
         return image;
       });
       const jumpFrames = Array.from({ length: 4 }, (_, frame) => {
         const image = new Image();
-        image.src = `/assets/bean-jump-${frame}-aligned-clean.png`;
+        image.src = `/assets/fagiolo-jump-v2-${frame}.png`;
         return image;
       });
-      // Decode the jump poses during the walk so the jump does not hitch later.
-      void Promise.all(jumpFrames.map(image => image.decode().catch(() => undefined)));
+      // The bar's CSS gives it a full-width fill for its final appearance;
+      // explicitly start it empty so it cannot look complete while JS prepares.
+      fill.style.transform = 'scaleX(0)';
       const routeWidth = route.clientWidth;
       const runnerWidth = runnerMover.clientWidth;
       let frameIndex = 0;
+      let walkCanvases: HTMLCanvasElement[] = [];
+      let jumpCanvases: HTMLCanvasElement[] = [];
+      let runnerCanvas: HTMLCanvasElement | null = null;
+      let runnerContext: CanvasRenderingContext2D | null = null;
       let jumping = false;
       let loadReady = false;
       let sceneFinished = false;
@@ -317,7 +322,19 @@ class HeistScene extends Phaser.Scene {
       let jumpPlayed = false;
       let jumpStartedAt = 0;
       let lastPercentValue = -1;
-      let displayedRunnerSrc = runner.src;
+      let sourceFramesReady = false;
+      let displayedRunnerSrc = runnerImage.src;
+      void Promise.all([...runnerFrames, ...jumpFrames].map(image => image.decode().catch(() => undefined)))
+        .then(() => { sourceFramesReady = true; });
+      let lastDrawnRunnerFrame: HTMLCanvasElement | null = null;
+      const drawRunnerFrame = (frames: HTMLCanvasElement[], index: number) => {
+        if (!runnerContext || !runnerCanvas || !frames.length) return;
+        const frame = frames[index % frames.length];
+        if (frame === lastDrawnRunnerFrame) return;
+        runnerContext.clearRect(0, 0, runnerCanvas.width, runnerCanvas.height);
+        runnerContext.drawImage(frame, 0, 0);
+        lastDrawnRunnerFrame = frame;
+      };
       const animateLoading = (now: number) => {
         const elapsed = Math.min(sceneDuration, now - loaderStartedAt);
         const walkElapsed = Math.min(sceneDuration, now - walkStartedAt);
@@ -331,30 +348,36 @@ class HeistScene extends Phaser.Scene {
           jumpPlayed = true;
           jumping = true;
           jumpStartedAt = walkElapsed;
-          runner.classList.add('is-jumping');
         }
 
         // Start on an in-stride pose so the first forward movement is already
         // accompanied by a visible walking step (rather than a sliding idle pose).
-        frameIndex = (1 + Math.floor(walkElapsed / 72)) % runnerFrames.length;
+        frameIndex = (1 + Math.floor(walkElapsed / 82)) % runnerFrames.length;
         if (jumping) {
           const jumpElapsed = walkElapsed - jumpStartedAt;
           if (jumpElapsed >= 600) {
             jumping = false;
-            runner.classList.remove('is-jumping');
+            (runnerCanvas ?? runnerImage).classList.remove('is-jumping');
+          } else if (jumpElapsed < 100) {
+            (runnerCanvas ?? runnerImage).classList.remove('is-jumping');
+            drawRunnerFrame(jumpCanvases, 0);
           } else {
-            // Jump frame 0 is cropped at the shoe soles. Begin with the clean
-            // takeoff pose and advance through the fully visible airborne poses.
-            const jumpPose = 1 + Math.min(2, Math.floor(jumpElapsed / 130));
-            if (displayedRunnerSrc !== jumpFrames[jumpPose].src) {
-              runner.src = jumpFrames[jumpPose].src;
-              displayedRunnerSrc = jumpFrames[jumpPose].src;
-            }
+            (runnerCanvas ?? runnerImage).classList.add('is-jumping');
+            const jumpPose = 1 + Math.min(2, Math.floor((jumpElapsed - 100) / 160));
+            drawRunnerFrame(jumpCanvases, jumpPose);
           }
         }
-        if (!jumping && displayedRunnerSrc !== runnerFrames[frameIndex].src) {
-          runner.src = runnerFrames[frameIndex].src;
-          displayedRunnerSrc = runnerFrames[frameIndex].src;
+        if (!jumping) drawRunnerFrame(walkCanvases, frameIndex);
+        if (!runnerContext && sourceFramesReady) {
+          const source = jumping
+            ? jumpFrames[(walkElapsed - jumpStartedAt) < 100
+              ? 0
+              : 1 + Math.min(2, Math.floor(((walkElapsed - jumpStartedAt) - 100) / 160))].src
+            : runnerFrames[frameIndex].src;
+          if (source !== displayedRunnerSrc) {
+            runnerImage.src = source;
+            displayedRunnerSrc = source;
+          }
         }
 
         const percentValue = Math.round(progress * 100);
@@ -373,18 +396,54 @@ class HeistScene extends Phaser.Scene {
           finishIfReady();
         } else window.requestAnimationFrame(animateLoading);
       };
-      // Wait for every walk pose to load and decode before starting the timer or
-      // animation. This avoids a frozen first pose followed by a sudden burst.
-      Promise.all(runnerFrames.map(image => image.decode().catch(() => undefined))).then(() => {
+      // Let the line, route, and already-visible walking pose move while the
+      // higher quality opaque frame canvases are prepared.
+      loaderStartedAt = performance.now();
+      walkStartedAt = loaderStartedAt;
+      window.requestAnimationFrame(animateLoading);
+      // Decode and normalize every pose before starting. Reusing prepared
+      // canvases avoids image decode hitches during the walk and jump.
+      const prepareFrame = async (image: HTMLImageElement) => {
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Canvas 2D context unavailable');
+        context.drawImage(image, 0, 0);
+        // Preserve the source art's original alpha and antialiased edges. Frame
+        // consistency belongs in the sprite artwork, not a per-pixel runtime fix.
+        return canvas;
+      };
+      Promise.all([...runnerFrames, ...jumpFrames].map(prepareFrame)).then(preparedFrames => {
         if (dismissed) return;
-        frameIndex = 1;
-        runner.src = runnerFrames[frameIndex].src;
-        displayedRunnerSrc = runnerFrames[frameIndex].src;
-        loaderStartedAt = performance.now();
-        walkStartedAt = loaderStartedAt;
-        // The walk has its own constant-speed clock; it does not follow the
-        // loading bar's faster jump segment or easing.
-        window.requestAnimationFrame(animateLoading);
+        walkCanvases = preparedFrames.slice(0, runnerFrames.length);
+        jumpCanvases = preparedFrames.slice(runnerFrames.length);
+        runnerCanvas = document.createElement('canvas');
+        runnerCanvas.className = runnerImage.className;
+        runnerCanvas.width = walkCanvases[0].width;
+        runnerCanvas.height = walkCanvases[0].height;
+        runnerContext = runnerCanvas.getContext('2d');
+        if (!runnerContext) throw new Error('Canvas 2D context unavailable');
+        runnerImage.replaceWith(runnerCanvas);
+        const walkElapsed = Math.min(sceneDuration, performance.now() - walkStartedAt);
+        const currentFrame = (1 + Math.floor(walkElapsed / 82)) % runnerFrames.length;
+        if (walkElapsed >= 1800 && walkElapsed < 2400) {
+          const jumpElapsed = walkElapsed - 1800;
+          if (jumpElapsed < 100) {
+            runnerCanvas.classList.remove('is-jumping');
+            drawRunnerFrame(jumpCanvases, 0);
+          } else {
+            runnerCanvas.classList.add('is-jumping');
+            drawRunnerFrame(jumpCanvases, 1 + Math.min(2, Math.floor((jumpElapsed - 100) / 160)));
+          }
+        } else {
+          runnerCanvas.classList.remove('is-jumping');
+          drawRunnerFrame(walkCanvases, currentFrame);
+        }
+      }).catch(() => {
+        // The regular predecoded sprite frames continue animating if canvas
+        // pixel processing is unavailable; the loader progress keeps running.
       });
       this.load.once('complete', () => {
         loadReady = true;
@@ -395,13 +454,13 @@ class HeistScene extends Phaser.Scene {
     this.load.image('level-2-background', '/assets/level-2-background.webp');
     this.load.image('level-3-background', '/assets/level-3-background.webp');
     for (let frame = 0; frame < 3; frame++) {
-      this.load.image(`bean-idle-${frame}`, `/assets/bean-idle-${frame}-aligned-clean.png`);
+      this.load.image(`bean-idle-${frame}`, `/assets/fagiolo-idle-v2-${frame}.png`);
     }
     for (let frame = 0; frame < 6; frame++) {
-      this.load.image(`bean-walk-${frame}`, `/assets/bean-walk-${frame}-aligned-clean.png`);
+      this.load.image(`bean-walk-${frame}`, `/assets/fagiolo-walk-v2-${frame}.png`);
     }
     for (let frame = 0; frame < 4; frame++) {
-      this.load.image(`bean-jump-${frame}`, `/assets/bean-jump-${frame}-aligned-clean.png`);
+      this.load.image(`bean-jump-${frame}`, `/assets/fagiolo-jump-v2-${frame}.png`);
     }
     this.load.image('bean-coin', '/assets/bean-coin-optimized.png');
     this.load.image('prop-spikes', '/assets/prop-spikes.png');
@@ -493,7 +552,7 @@ class HeistScene extends Phaser.Scene {
     this.titleLayer.setVisible(false);
     const landing = document.createElement('div');
     landing.className = 'landing-menu is-visible';
-    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/bean-idle-0-aligned-clean.png" alt="Fagiolo"></span><span class="nav-caption">FAGIOLO HEIST</span><span class="nav-chip">A SNEAKY PLATFORMER</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> SNEAK IN. GET THE BEANS. GET OUT.</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">Slip past the guards, dodge castle traps and collect beans on your way to the treasure.</p><button class="landing-cta" type="button"><span>CHOOSE A LEVEL</span><b>→</b></button></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>LEAP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">ESC <b>PAUSES</b></span></footer>`;
+    landing.innerHTML = `<header class="landing-nav"><span class="brand-mark"><img src="/assets/fagiolo-idle-v2-0.png" alt="Fagiolo"></span><span class="nav-caption">FAGIOLO HEIST</span><span class="nav-chip">A SNEAKY PLATFORMER</span></header><section class="landing-hero"><div class="hero-copy"><p class="hero-eyebrow"><i></i> SNEAK IN. GET THE BEANS. GET OUT.</p><h1>FAGIOLO<br><em>HEIST!</em></h1><p class="hero-description">Slip past the guards, dodge castle traps and collect beans on your way to the treasure.</p><button class="landing-cta" type="button"><span>CHOOSE A LEVEL</span><b>→</b></button></div></section><footer class="landing-footer"><span>MOVE <b>A / D</b> OR <b>← →</b></span><span>LEAP <b>SPACE</b></span><span>GADGETS <b>1 — 4</b></span><span class="footer-note">ESC <b>PAUSES</b></span></footer>`;
     document.getElementById('game')?.append(landing);
     this.landingMenu = landing;
     this.setLandingBackdrop();
@@ -504,7 +563,7 @@ class HeistScene extends Phaser.Scene {
     });
     const levelMenu = document.createElement('div');
     levelMenu.className = 'level-menu';
-    levelMenu.innerHTML = `<section class="level-panel"><header class="level-heading"><div><p class="level-kicker">THE CASTLE · THREE WINGS</p><h1>Choose your route</h1><p class="level-intro">Each wing has its own watch, its own hazards, and a way through.</p></div><span class="level-seal"><img src="/assets/bean-idle-0-aligned-clean.png" alt="Fagiolo"></span></header><div class="level-cards"></div><footer class="level-panel-footer"><span>COMPLETE A WING TO OPEN THE NEXT</span><button class="level-back" type="button">RETURN TO TITLE</button></footer></section>`;
+    levelMenu.innerHTML = `<section class="level-panel"><header class="level-heading"><div><p class="level-kicker">THE CASTLE · THREE WINGS</p><h1>Choose your route</h1><p class="level-intro">Each wing has its own watch, its own hazards, and a way through.</p></div><span class="level-seal"><img src="/assets/fagiolo-idle-v2-0.png" alt="Fagiolo"></span></header><div class="level-cards"></div><footer class="level-panel-footer"><span>COMPLETE A WING TO OPEN THE NEXT</span><button class="level-back" type="button">RETURN TO TITLE</button></footer></section>`;
     document.getElementById('game')?.append(levelMenu);
     this.levelMenu = levelMenu;
     const cards = levelMenu.querySelector('.level-cards') as HTMLDivElement;
@@ -632,7 +691,7 @@ class HeistScene extends Phaser.Scene {
 
     const resultActions = document.createElement('div');
     resultActions.className = 'game-result-actions';
-    resultActions.innerHTML = `<section class="game-report" role="dialog" aria-modal="true" aria-labelledby="game-report-title"><div class="report-topline"><span class="report-brand-mark" aria-hidden="true"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><span class="report-kicker">HEIST REPORT <i></i> LEVEL <b data-report-level>1</b></span><span class="report-status" data-report-status>RUN COMPLETE</span></div><header class="report-heading"><span class="report-emblem" data-report-emblem aria-hidden="true">★</span><div><h2 id="game-report-title" data-report-title>ESCAPE COMPLETE</h2><p data-report-subtitle>Fagiolo got away with the goods.</p></div></header><div class="report-stats"><article class="report-stat report-stat-score"><span>SCORE</span><strong data-report-score>00000</strong></article><article class="report-stat"><span>BEANS</span><strong data-report-beans>00 / 00</strong></article><article class="report-stat"><span>TIME LEFT</span><strong data-report-time>00:00</strong></article><article class="report-stat"><span>LIVES</span><strong data-report-lives>0 / 4</strong></article></div><div class="report-reward"><span class="report-reward-icon" aria-hidden="true">✦</span><span><small data-report-reward-kicker>LEVEL REWARD</small><b data-report-reward>CHEST +500</b></span><span class="report-reward-extra" data-report-extra>BEAN BONUS +500</span></div><footer class="report-actions"><button class="report-primary" type="button" data-result="primary">PLAY NEXT LEVEL</button><button class="report-secondary" type="button" data-result="levels">LEVEL SELECT</button></footer><p class="report-footnote" data-report-footnote>Every bean brings you closer to the perfect escape.</p></section>`;
+    resultActions.innerHTML = `<section class="game-report" role="dialog" aria-modal="true" aria-labelledby="game-report-title"><div class="report-topline"><span class="report-brand-mark" aria-hidden="true"><img src="/assets/fagiolo-idle-v2-0.png" alt=""></span><span class="report-kicker">HEIST REPORT <i></i> LEVEL <b data-report-level>1</b></span><span class="report-status" data-report-status>RUN COMPLETE</span></div><header class="report-heading"><span class="report-emblem" data-report-emblem aria-hidden="true">★</span><div><h2 id="game-report-title" data-report-title>ESCAPE COMPLETE</h2><p data-report-subtitle>Fagiolo got away with the goods.</p></div></header><div class="report-stats"><article class="report-stat report-stat-score"><span>SCORE</span><strong data-report-score>00000</strong></article><article class="report-stat"><span>BEANS</span><strong data-report-beans>00 / 00</strong></article><article class="report-stat"><span>TIME LEFT</span><strong data-report-time>00:00</strong></article><article class="report-stat"><span>LIVES</span><strong data-report-lives>0 / 4</strong></article></div><div class="report-reward"><span class="report-reward-icon" aria-hidden="true">✦</span><span><small data-report-reward-kicker>LEVEL REWARD</small><b data-report-reward>CHEST +500</b></span><span class="report-reward-extra" data-report-extra>BEAN BONUS +500</span></div><footer class="report-actions"><button class="report-primary" type="button" data-result="primary">PLAY NEXT LEVEL</button><button class="report-secondary" type="button" data-result="levels">LEVEL SELECT</button></footer><p class="report-footnote" data-report-footnote>Every bean brings you closer to the perfect escape.</p></section>`;
     mount.append(resultActions);
     this.gameResultActions = resultActions;
     const primaryButton = resultActions.querySelector<HTMLButtonElement>('[data-result="primary"]');
@@ -815,11 +874,11 @@ class HeistScene extends Phaser.Scene {
     overlay.className = 'online-overlay';
     overlay.setAttribute('aria-hidden', 'true');
     overlay.innerHTML = `<section class="online-panel leaderboard-panel" role="dialog" aria-modal="true" aria-labelledby="online-title">
-      <header class="online-panel-header"><span class="online-brand"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header>
+      <header class="online-panel-header"><span class="online-brand"><img src="/assets/fagiolo-idle-v2-0.png" alt=""></span><div><span class="online-kicker">FAGIOLO HEIST ONLINE</span><h2 id="online-title">Create your account</h2></div><button class="online-close" type="button" aria-label="Close">×</button></header>
       <div class="online-auth-view" data-online-auth-view>
         <p class="online-intro" data-auth-intro>Save your best runs and compete on each level’s leaderboard.</p>
         <form class="online-auth-form" data-auth-form><label class="online-field" data-auth-username-wrap>Account username<input name="login_username" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" autocomplete="username" placeholder="BeanRunner" required></label><label class="online-field">Password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label><p class="online-privacy-note">Your login name and Telegram contact stay private. Only your in-game name appears on the leaderboard.</p><button class="online-submit" type="submit" data-auth-submit>CREATE ACCOUNT</button></form>
-        <div class="online-member-view" data-online-member hidden><section class="player-profile-card"><span class="player-profile-avatar"><img src="/assets/bean-idle-0-aligned-clean.png" alt=""></span><div class="player-profile-copy"><span class="online-kicker">PLAYER PROFILE</span><p class="online-member-name" data-online-member-name></p><p class="player-profile-login">ACCOUNT USERNAME <strong data-player-login></strong></p><p class="online-intro">Your best completed runs are saved here and ranked by level.</p></div><span class="player-profile-status">SIGNED IN</span></section></div>
+        <div class="online-member-view" data-online-member hidden><section class="player-profile-card"><span class="player-profile-avatar"><img src="/assets/fagiolo-idle-v2-0.png" alt=""></span><div class="player-profile-copy"><span class="online-kicker">PLAYER PROFILE</span><p class="online-member-name" data-online-member-name></p><p class="player-profile-login">ACCOUNT USERNAME <strong data-player-login></strong></p><p class="online-intro">Your best completed runs are saved here and ranked by level.</p></div><span class="player-profile-status">SIGNED IN</span></section></div>
         <p class="online-notice" data-auth-notice role="status" aria-live="polite"></p><button class="online-mode-switch" type="button" data-auth-mode-toggle>Already have an account? Sign in</button>
       </div>
       <div class="online-board-view" data-online-board-view hidden>
@@ -1169,7 +1228,7 @@ class HeistScene extends Phaser.Scene {
     const avatar = document.createElement('span');
     avatar.className = 'podium-avatar';
     const bean = document.createElement('img');
-    bean.src = '/assets/bean-idle-0-aligned-clean.png';
+    bean.src = '/assets/fagiolo-idle-v2-0.png';
     bean.alt = '';
     avatar.append(bean);
     const playerName = document.createElement('strong');
@@ -2058,7 +2117,8 @@ class HeistScene extends Phaser.Scene {
     const levelStart = 0;
     const levelEnd = this.courseWidth;
     const firstPlatform = this.activePlatforms[0];
-    const spawnX = Math.max(100, (firstPlatform?.x ?? 0) + 100);
+    // Keep the full sprite inside the opening view on narrow mobile screens.
+    const spawnX = Math.max(140, (firstPlatform?.x ?? 0) + 140);
     const spawnPlatform = this.activePlatforms.find(platform => spawnX >= platform.x && spawnX <= platform.x + platform.w);
     const spawnSurfaceY = spawnPlatform?.y ?? FLOOR;
     this.player = { x: spawnX, y: spawnSurfaceY - 34, vx: 0, vy: 0, grounded: true };
@@ -2167,13 +2227,11 @@ class HeistScene extends Phaser.Scene {
 
   private resizeGameView(width: number, height: number) {
     if (!width || !height) return;
-    // Phone landscape gets a closer camera: fitting all 934 world units into a
-    // short screen made Fagiolo and the hazards too small to read. The camera
-    // follows near the floor, so this trims mostly empty sky instead of
-    // stretching the level or cropping the route in front of the player.
+    // Pull the phone-landscape camera back a little so more of the route is
+    // visible at once, while keeping the scene proportional and readable.
     const shortLandscapeTouch = this.isShortLandscapeTouch(width, height);
     const zoomX = shortLandscapeTouch
-      ? Math.min(0.9, Math.min(width / 1280, height / 700) * 1.25)
+      ? Math.min(0.82, Math.min(width / 1280, height / 700) * 1.1)
       : Math.min(1, width / W, height / H);
     const zoomY = zoomX;
     const viewWidth = width / zoomX;
@@ -2284,9 +2342,9 @@ class HeistScene extends Phaser.Scene {
     // Decode every animation frame ahead of play so the first walk cycle does
     // not hitch while the browser decodes a newly selected frame.
     const animationAssets = [
-      ...Array.from({ length: 3 }, (_, frame) => `/assets/bean-idle-${frame}-aligned-clean.png`),
-      ...Array.from({ length: 6 }, (_, frame) => `/assets/bean-walk-${frame}-aligned-clean.png`),
-      ...Array.from({ length: 4 }, (_, frame) => `/assets/bean-jump-${frame}-aligned-clean.png`),
+      ...Array.from({ length: 3 }, (_, frame) => `/assets/fagiolo-idle-v2-${frame}.png`),
+      ...Array.from({ length: 6 }, (_, frame) => `/assets/fagiolo-walk-v2-${frame}.png`),
+      ...Array.from({ length: 4 }, (_, frame) => `/assets/fagiolo-jump-v2-${frame}.png`),
       ...Array.from({ length: 6 }, (_, frame) => `/assets/guard-walk-${frame}-aligned.png`),
       '/assets/guard-idle-aligned.png', '/assets/guard-stunned-aligned.png',
     ];
@@ -2307,7 +2365,12 @@ class HeistScene extends Phaser.Scene {
   }
 
   private crispAssetFor(textureKey: string) {
-    if (/^bean-(?:idle|walk|jump)-\d+$/.test(textureKey)) return `/assets/${textureKey}-aligned-clean.png`;
+    const idleFrame = /^bean-idle-(\d+)$/.exec(textureKey);
+    if (idleFrame) return `/assets/fagiolo-idle-v2-${idleFrame[1]}.png`;
+    const walkFrame = /^bean-walk-(\d+)$/.exec(textureKey);
+    if (walkFrame) return `/assets/fagiolo-walk-v2-${walkFrame[1]}.png`;
+    const jumpFrame = /^bean-jump-(\d+)$/.exec(textureKey);
+    if (jumpFrame) return `/assets/fagiolo-jump-v2-${jumpFrame[1]}.png`;
     if (/^guard-walk-\d+$/.test(textureKey)) return `/assets/${textureKey}-aligned.png`;
     if (textureKey === 'guard-idle') return '/assets/guard-idle-aligned.png';
     if (textureKey === 'guard-stunned') return '/assets/guard-stunned-aligned.png';
@@ -2687,7 +2750,14 @@ class HeistScene extends Phaser.Scene {
     const oldY = this.player.y;
     const oldX = this.player.x;
     const wasGrounded = this.player.grounded;
-    this.player.x = Phaser.Math.Clamp(this.player.x + this.player.vx * dt, 24, this.courseWidth - 24);
+    // Camera bounds stop at the level edge, so keep Fagiolo's visible sprite
+    // inside those bounds instead of clamping only the much narrower hitbox.
+    const playerEdgeMargin = 90;
+    this.player.x = Phaser.Math.Clamp(
+      this.player.x + this.player.vx * dt,
+      playerEdgeMargin,
+      this.courseWidth - playerEdgeMargin,
+    );
     this.player.y += this.player.vy * dt;
     this.player.grounded = false;
 
