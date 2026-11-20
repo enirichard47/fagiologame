@@ -1394,7 +1394,7 @@ class HeistScene extends Phaser.Scene {
       if (!rows.length) { const empty = document.createElement('li'); empty.className = 'online-privacy-note'; empty.textContent = 'No scores have been removed.'; list.append(empty); return; }
       rows.forEach((record: AdminModerationRecord) => {
         const item = document.createElement('li'); item.className = 'admin-claim-row';
-        const info = document.createElement('span'); info.textContent = `${record.username ?? record.player_id.slice(0, 8)} · Level ${record.level} · ${record.score.toLocaleString()} · ${record.reason.replaceAll('_', ' ')} · ${new Date(record.deleted_at).toLocaleString()}`;
+        const info = document.createElement('span'); info.textContent = `${record.username ?? record.player_id.slice(0, 8)} · Level ${record.level} · ${record.score.toLocaleString()} · ${record.reason.replace(/_/g, ' ')} · ${new Date(record.deleted_at).toLocaleString()}`;
         item.append(info); list.append(item);
       });
     } catch (error) { const item = document.createElement('li'); item.className = 'online-privacy-note'; item.textContent = error instanceof Error ? error.message : 'Could not load moderation history.'; list.append(item); }
