@@ -7,4 +7,17 @@ export default defineConfig({
       plugins: [],
     },
   },
+  build: {
+    // Phaser is a sizeable, stable third-party runtime. Keep it in a separate
+    // cacheable chunk and allow for its known minified size; its gzip payload
+    // is substantially smaller than the raw-size warning threshold suggests.
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/node_modules/')) return 'vendor';
+        },
+      },
+    },
+  },
 });

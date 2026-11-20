@@ -2206,6 +2206,9 @@ class HeistScene extends Phaser.Scene {
     const shortLandscapeTouch = this.isShortLandscapeTouch();
     this.cameras.main.setScroll(levelStart, 0);
     this.cameras.main.startFollow(this.heroSprite, true, 0.12, shortLandscapeTouch ? 0.12 : 0.08);
+    // The crisp DOM sprite layer reads this matrix immediately. Calculate it
+    // now so the first frame does not use the previous title-screen camera.
+    this.cameras.main.preRender();
     this.setCrispOverlayActive(window.devicePixelRatio > 1.01);
     const goalX = levelEnd - 110;
     this.chestSprites[0].setPosition(goalX, FLOOR).setVisible(true).setTexture('prop-chest-0');
@@ -2243,6 +2246,7 @@ class HeistScene extends Phaser.Scene {
     this.viewOffsetX = Math.max(0, (viewWidth - W) / 2);
     this.viewOffsetY = Math.max(0, (viewHeight - H) / 2);
     this.cameras.main.setZoom(zoomX, zoomY);
+    this.cameras.main.preRender();
     this.applyGameplayTextResolution(shortLandscapeTouch ? 2 : 1);
 
     // Keep ground platforms visually connected to the bottom of a taller
@@ -3767,15 +3771,20 @@ class HeistScene extends Phaser.Scene {
 }
 
 const gameHost = window as Window & { __fagioloHeistGame?: Phaser.Game };
+const readVisibleGameArea = () => {
+  const viewport = window.visualViewport;
+  const visualViewportIsUsable = viewport && Math.abs(viewport.scale - 1) < 0.01;
+  return {
+    width: Math.max(1, Math.round(visualViewportIsUsable ? viewport.width : window.innerWidth)),
+    height: Math.max(1, Math.round(visualViewportIsUsable ? viewport.height : window.innerHeight)),
+    left: visualViewportIsUsable ? viewport.offsetLeft : 0,
+    top: visualViewportIsUsable ? viewport.offsetTop : 0,
+  };
+};
 const syncVisibleGameArea = () => {
   const mount = document.getElementById('game');
   if (!mount) return;
-  const viewport = window.visualViewport;
-  const visualViewportIsUsable = viewport && Math.abs(viewport.scale - 1) < 0.01;
-  const width = visualViewportIsUsable ? viewport.width : window.innerWidth;
-  const height = visualViewportIsUsable ? viewport.height : window.innerHeight;
-  const left = visualViewportIsUsable ? viewport.offsetLeft : 0;
-  const top = visualViewportIsUsable ? viewport.offsetTop : 0;
+  const { width, height, left, top } = readVisibleGameArea();
   mount.style.setProperty('--game-visible-width', `${width}px`);
   mount.style.setProperty('--game-visible-height', `${height}px`);
   mount.style.setProperty('--game-visible-left', `${left}px`);
@@ -3786,11 +3795,12 @@ window.addEventListener('resize', syncVisibleGameArea, { passive: true });
 window.visualViewport?.addEventListener('resize', syncVisibleGameArea, { passive: true });
 gameHost.__fagioloHeistGame?.destroy(true);
 document.querySelectorAll('#game > .game-preloader, #game > .landing-menu, #game > .level-menu, #game > .game-top-controls, #game > .game-result-actions, #game > .game-settings-overlay, #game > .game-pause-overlay, #game > .game-touch-controls, #game > .orientation-gate, #game > .online-overlay, #game > .game-crisp-overlay').forEach(element => element.remove());
+const initialGameArea = readVisibleGameArea();
 gameHost.__fagioloHeistGame = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: window.innerWidth,
-  height: window.innerHeight,
+  width: initialGameArea.width,
+  height: initialGameArea.height,
   fullscreenTarget: 'game',
   backgroundColor: '#102744',
   transparent: true,
